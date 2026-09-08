@@ -444,7 +444,17 @@ class MixedLMResults:
 
     @property
     def fittedvalues(self):
-        return self.model.exog @ self.fe_params
+        """Conditional fit: X*beta + Z*b, including the random effects.
+
+        This matches statsmodels, whose ``fittedvalues`` adds each group's
+        conditional modes. ``predict()`` remains marginal (fixed effects only),
+        also matching the reference.
+        """
+        fit = self.model.exog @ self.fe_params
+        b = self._random_effects            # (m, q)
+        codes = self.model._codes
+        fit = fit + np.einsum("nq,nq->n", self.model.exog_re, b[codes])
+        return fit
 
     @property
     def resid(self):
