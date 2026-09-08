@@ -99,28 +99,68 @@ pub fn theta_to_lambda(theta: &[f64], q: usize) -> Vec<f64> {
     lam
 }
 
-/// Per-group quantities carried from the first pass to the second.
-struct Block {
-    ainv: Vec<f64>,  // q*q
-    m_mat: Vec<f64>, // q*q  (= Z'Z Lambda)
-    b: Vec<f64>,     // q*p  (= A^-1 W)
-    rzx: Vec<f64>,   // q*p
-    cu: Vec<f64>,    // q
-    l: Vec<f64>,     // q*q
+/// Per-group state lives in one flat buffer of `m * BlockLayout::stride`
+/// doubles, allocated once per evaluation rather than as ~10 small `Vec`s per
+/// group. At 125,000 groups and 10 objective evaluations that is the difference
+/// between a handful of allocations and roughly twelve million of them.
+#[derive(Clone, Copy)]
+struct BlockLayout {
+    qq: usize,
+    qp: usize,
+    stride: usize,
 }
 
-struct Pass1 {
-    block: Block,
+impl BlockLayout {
+    fn new(q: usize, p: usize) -> Self {
+        let (qq, qp) = (q * q, q * p);
+        // ainv | m_mat | l | b | rzx | cu
+        Self { qq, qp, stride: 3 * qq + 2 * qp + q }
+    }
+
+    /// Split one group's slice into its six named pieces.
+    fn split<'a>(
+        &self,
+        buf: &'a mut [f64],
+    ) -> (&'a mut [f64], &'a mut [f64], &'a mut [f64], &'a mut [f64], &'a mut [f64], &'a mut [f64])
+    {
+        let (ainv, rest) = buf.split_at_mut(self.qq);
+        let (m_mat, rest) = rest.split_at_mut(self.qq);
+        let (l, rest) = rest.split_at_mut(self.qq);
+        let (b, rest) = rest.split_at_mut(self.qp);
+        let (rzx, cu) = rest.split_at_mut(self.qp);
+        (ainv, m_mat, l, b, rzx, cu)
+    }
+
+    fn split_ref<'a>(
+        &self,
+        buf: &'a [f64],
+    ) -> (&'a [f64], &'a [f64], &'a [f64], &'a [f64], &'a [f64], &'a [f64]) {
+        let (ainv, rest) = buf.split_at(self.qq);
+        let (m_mat, rest) = rest.split_at(self.qq);
+        let (l, rest) = rest.split_at(self.qq);
+        let (b, rest) = rest.split_at(self.qp);
+        let (rzx, cu) = rest.split_at(self.qp);
+        (ainv, m_mat, l, b, rzx, cu)
+    }
+}
+
+/// Fold accumulator for pass 1. One per rayon thread, not one per group.
+struct Acc1 {
+    ok: bool,
     ldl2: f64,
-    acc_pp: Vec<f64>,
-    acc_p: Vec<f64>,
+    pp: Vec<f64>,
+    p: Vec<f64>,
 }
 
-struct Pass2 {
-    u: Vec<f64>,
+/// Fold accumulator for pass 2.
+struct Acc2 {
     uv: f64,
     grad_ld: Vec<f64>,
     grad_pw: Vec<f64>,
+    bp: Vec<f64>,
+    bpbt: Vec<f64>,
+    g: Vec<f64>,
+    t: Vec<f64>,
 }
 
 /// Evaluate the profiled criterion, and optionally its gradient, at `theta`.
@@ -134,75 +174,93 @@ pub fn evaluate(d: &LmmData, theta: &[f64], reml: bool, want_grad: bool) -> Opti
     let nth = tix.len();
 
     // ---- Pass 1: factorise each block, accumulate the fixed-effect system.
-    let pass1: Option<Vec<Pass1>> = (0..m)
-        .into_par_iter()
-        .map(|i| -> Option<Pass1> {
-            let ztz_i = &d.ztz[i * q * q..(i + 1) * q * q];
-            let ztx_i = &d.ztx[i * q * p..(i + 1) * q * p];
-            let zty_i = &d.zty[i * q..(i + 1) * q];
+    //
+    // Every intermediate is written straight into the group's slice of `blocks`,
+    // so no per-group allocation happens at all. The accumulators live in the
+    // fold state, which rayon creates once per thread.
+    let lay = BlockLayout::new(q, p);
+    let mut blocks = vec![0.0f64; m * lay.stride];
 
-            // M = Z'Z * Lambda           (q x q)
-            let mut m_mat = vec![0.0; q * q];
-            matmul(ztz_i, &lam, &mut m_mat, q, q, q);
+    let acc = blocks
+        .par_chunks_mut(lay.stride)
+        .enumerate()
+        .fold(
+            || Acc1 { ok: true, ldl2: 0.0, pp: vec![0.0; p * p], p: vec![0.0; p] },
+            |mut acc, (i, buf)| {
+                if !acc.ok {
+                    return acc;
+                }
+                let ztz_i = &d.ztz[i * q * q..(i + 1) * q * q];
+                let ztx_i = &d.ztx[i * q * p..(i + 1) * q * p];
+                let zty_i = &d.zty[i * q..(i + 1) * q];
+                let (ainv, m_mat, l, b, rzx, cu) = lay.split(buf);
 
-            // A = Lambda' * M + I        (q x q)
-            let mut a = vec![0.0; q * q];
-            matmul_at(&lam, &m_mat, &mut a, q, q, q);
-            for j in 0..q {
-                a[j * q + j] += 1.0;
-            }
+                // M = Z'Z * Lambda
+                matmul(ztz_i, &lam, m_mat, q, q, q);
+                // A = Lambda' * M + I, built directly in `l` and factorised there
+                matmul_at(&lam, m_mat, l, q, q, q);
+                for j in 0..q {
+                    l[j * q + j] += 1.0;
+                }
+                if cholesky(l, q).is_none() {
+                    acc.ok = false;
+                    return acc;
+                }
+                acc.ldl2 += 2.0 * log_diag_sum(l, q);
+                chol_inverse(l, ainv, q);
 
-            let mut l = a;
-            cholesky(&mut l, q)?;
-            let ldl2 = 2.0 * log_diag_sum(&l, q);
+                // W = Lambda' * Z'X, staged in `rzx`; B = A^-1 W reads it there.
+                matmul_at(&lam, ztx_i, rzx, q, q, p);
+                matmul(ainv, rzx, b, q, q, p);
+                // rzx becomes L^-1 W in place
+                trsm_lower(l, rzx, q, p);
 
-            let mut ainv = vec![0.0; q * q];
-            chol_inverse(&l, &mut ainv, q);
+                // cu = L^-1 Lambda' Z'y, in place
+                matmul_at(&lam, zty_i, cu, q, q, 1);
+                trsm_lower(l, cu, q, 1);
 
-            // W = Lambda' * Z'X          (q x p)
-            let mut w = vec![0.0; q * p];
-            matmul_at(&lam, ztx_i, &mut w, q, q, p);
+                // Accumulate RZX'RZX and RZX'cu without forming a temporary.
+                for a in 0..p {
+                    let mut sp = 0.0;
+                    for r in 0..q {
+                        sp += rzx[r * p + a] * cu[r];
+                    }
+                    acc.p[a] += sp;
+                    for bb in a..p {
+                        let mut s = 0.0;
+                        for r in 0..q {
+                            s += rzx[r * p + a] * rzx[r * p + bb];
+                        }
+                        acc.pp[a * p + bb] += s;
+                        if bb != a {
+                            acc.pp[bb * p + a] += s;
+                        }
+                    }
+                }
+                acc
+            },
+        )
+        .reduce(
+            || Acc1 { ok: true, ldl2: 0.0, pp: vec![0.0; p * p], p: vec![0.0; p] },
+            |mut a, b| {
+                a.ok &= b.ok;
+                a.ldl2 += b.ldl2;
+                for j in 0..p * p {
+                    a.pp[j] += b.pp[j];
+                }
+                for j in 0..p {
+                    a.p[j] += b.p[j];
+                }
+                a
+            },
+        );
 
-            // B = A^-1 * W               (q x p)
-            let mut b = vec![0.0; q * p];
-            matmul(&ainv, &w, &mut b, q, q, p);
-
-            // RZX = L^-1 * W             (q x p)
-            let mut rzx = w;
-            trsm_lower(&l, &mut rzx, q, p);
-
-            // cu = L^-1 * Lambda' * Z'y  (q)
-            let mut cu = vec![0.0; q];
-            matmul_at(&lam, zty_i, &mut cu, q, q, 1);
-            trsm_lower(&l, &mut cu, q, 1);
-
-            let mut acc_pp = vec![0.0; p * p];
-            matmul_at(&rzx, &rzx, &mut acc_pp, q, p, p);
-            let mut acc_p = vec![0.0; p];
-            matmul_at(&rzx, &cu, &mut acc_p, q, p, 1);
-
-            Some(Pass1 {
-                block: Block { ainv, m_mat, b, rzx, cu, l },
-                ldl2,
-                acc_pp,
-                acc_p,
-            })
-        })
-        .collect();
-    let pass1 = pass1?;
-
-    let mut ldl2 = 0.0;
-    let mut sum_pp = vec![0.0; p * p];
-    let mut sum_p = vec![0.0; p];
-    for r in &pass1 {
-        ldl2 += r.ldl2;
-        for j in 0..p * p {
-            sum_pp[j] += r.acc_pp[j];
-        }
-        for j in 0..p {
-            sum_p[j] += r.acc_p[j];
-        }
+    if !acc.ok {
+        return None;
     }
+    let ldl2 = acc.ldl2;
+    let sum_pp = acc.pp;
+    let sum_p = acc.p;
 
     // ---- Fixed effects: (X'X - sum RZX'RZX) beta = X'y - sum RZX'cu
     let mut rxtrx = vec![0.0; p * p];
@@ -224,104 +282,120 @@ pub fn evaluate(d: &LmmData, theta: &[f64], reml: bool, want_grad: bool) -> Opti
     //
     // The pwrss gradient is accumulated UNSCALED here; the dfree/pwrss factor is
     // applied afterwards, since pwrss is not known until this pass has summed.
-    let pass2: Vec<Pass2> = (0..m)
-        .into_par_iter()
-        .map(|i| {
-            let blk = &pass1[i].block;
-            let ztx_i = &d.ztx[i * q * p..(i + 1) * q * p];
-            let zty_i = &d.zty[i * q..(i + 1) * q];
+    // As in pass 1, scratch lives in the fold state -- one set per thread rather
+    // than one per group.
+    let mut u_all = vec![0.0f64; m * q];
 
-            // u = L^-T (cu - RZX beta)
-            let mut u = vec![0.0; q];
-            for r in 0..q {
-                let mut s = blk.cu[r];
-                for c in 0..p {
-                    s -= blk.rzx[r * p + c] * beta[c];
-                }
-                u[r] = s;
-            }
-            trsm_lower_t(&blk.l, &mut u, q, 1);
+    let acc2 = blocks
+        .par_chunks(lay.stride)
+        .zip(u_all.par_chunks_mut(q))
+        .enumerate()
+        .fold(
+            || Acc2 {
+                uv: 0.0,
+                grad_ld: vec![0.0; nth],
+                grad_pw: vec![0.0; nth],
+                bp: vec![0.0; q * p],
+                bpbt: vec![0.0; q * q],
+                g: vec![0.0; q * q],
+                t: vec![0.0; q],
+            },
+            |mut acc, (i, (buf, u))| {
+                let ztx_i = &d.ztx[i * q * p..(i + 1) * q * p];
+                let zty_i = &d.zty[i * q..(i + 1) * q];
+                let (ainv, m_mat, l, b, rzx, cu) = lay.split_ref(buf);
 
-            // pwrss contribution: u . (Lambda' Z'y)
-            let mut v = vec![0.0; q];
-            matmul_at(&lam, zty_i, &mut v, q, q, 1);
-            let uv = (0..q).map(|r| u[r] * v[r]).sum::<f64>();
-
-            let mut grad_ld = vec![0.0; if want_grad { nth } else { 0 }];
-            let mut grad_pw = vec![0.0; if want_grad { nth } else { 0 }];
-
-            if want_grad {
-                // G = M * A^-1                     -> d(ldL2)
-                let mut g = vec![0.0; q * q];
-                matmul(&blk.m_mat, &blk.ainv, &mut g, q, q, q);
-
-                // t = Z'y - Z'X beta - M u         -> d(pwrss)
-                let mut t = vec![0.0; q];
+                // u = L^-T (cu - RZX beta)
                 for r in 0..q {
-                    let mut s = zty_i[r];
+                    let mut s = cu[r];
                     for c in 0..p {
-                        s -= ztx_i[r * p + c] * beta[c];
+                        s -= rzx[r * p + c] * beta[c];
                     }
-                    for c in 0..q {
-                        s -= blk.m_mat[r * q + c] * u[c];
+                    u[r] = s;
+                }
+                trsm_lower_t(l, u, q, 1);
+
+                // pwrss contribution: u . (Lambda' Z'y), formed without a temp
+                for r in 0..q {
+                    let mut v = 0.0;
+                    for x in 0..q {
+                        v += lam[x * q + r] * zty_i[x];
                     }
-                    t[r] = s;
+                    acc.uv += u[r] * v;
                 }
 
-                // REML-only: BP = B P (q x p), BPBt = BP B' (q x q)
-                let mut bp = Vec::new();
-                let mut bpbt = Vec::new();
-                if reml {
-                    bp = vec![0.0; q * p];
-                    matmul(&blk.b, &rxtrx_inv, &mut bp, q, p, p);
-                    bpbt = vec![0.0; q * q];
+                if want_grad {
+                    // G = M * A^-1                     -> d(ldL2)
+                    matmul(m_mat, ainv, &mut acc.g, q, q, q);
+
+                    // t = Z'y - Z'X beta - M u         -> d(pwrss)
                     for r in 0..q {
+                        let mut s = zty_i[r];
+                        for c in 0..p {
+                            s -= ztx_i[r * p + c] * beta[c];
+                        }
                         for c in 0..q {
-                            let mut s = 0.0;
-                            for x in 0..p {
-                                s += bp[r * p + x] * blk.b[c * p + x];
-                            }
-                            bpbt[r * q + c] = s;
+                            s -= m_mat[r * q + c] * u[c];
                         }
+                        acc.t[r] = s;
                     }
-                }
 
-                for (k, &(r, c)) in tix.iter().enumerate() {
-                    let mut gk = 2.0 * g[r * q + c];
                     if reml {
-                        let mut s1 = 0.0;
-                        for x in 0..p {
-                            s1 += ztx_i[r * p + x] * bp[c * p + x];
+                        matmul(b, &rxtrx_inv, &mut acc.bp, q, p, p);
+                        for r in 0..q {
+                            for c in 0..q {
+                                let mut s = 0.0;
+                                for x in 0..p {
+                                    s += acc.bp[r * p + x] * b[c * p + x];
+                                }
+                                acc.bpbt[r * q + c] = s;
+                            }
                         }
-                        let mut s2 = 0.0;
-                        for x in 0..q {
-                            s2 += blk.m_mat[r * q + x] * bpbt[x * q + c];
-                        }
-                        gk -= 2.0 * (s1 - s2);
                     }
-                    grad_ld[k] = gk;
-                    grad_pw[k] = -2.0 * u[c] * t[r];
+
+                    for (k, &(r, c)) in tix.iter().enumerate() {
+                        let mut gk = 2.0 * acc.g[r * q + c];
+                        if reml {
+                            let mut s1 = 0.0;
+                            for x in 0..p {
+                                s1 += ztx_i[r * p + x] * acc.bp[c * p + x];
+                            }
+                            let mut s2 = 0.0;
+                            for x in 0..q {
+                                s2 += m_mat[r * q + x] * acc.bpbt[x * q + c];
+                            }
+                            gk -= 2.0 * (s1 - s2);
+                        }
+                        acc.grad_ld[k] += gk;
+                        acc.grad_pw[k] += -2.0 * u[c] * acc.t[r];
+                    }
                 }
-            }
+                acc
+            },
+        )
+        .reduce(
+            || Acc2 {
+                uv: 0.0,
+                grad_ld: vec![0.0; nth],
+                grad_pw: vec![0.0; nth],
+                bp: Vec::new(),
+                bpbt: Vec::new(),
+                g: Vec::new(),
+                t: Vec::new(),
+            },
+            |mut a, b| {
+                a.uv += b.uv;
+                for k in 0..nth {
+                    a.grad_ld[k] += b.grad_ld[k];
+                    a.grad_pw[k] += b.grad_pw[k];
+                }
+                a
+            },
+        );
 
-            Pass2 { u, uv, grad_ld, grad_pw }
-        })
-        .collect();
-
-    let mut u_all = vec![0.0; m * q];
-    let mut sum_uv = 0.0;
-    let mut grad_ld = vec![0.0; nth];
-    let mut grad_pw = vec![0.0; nth];
-    for (i, r) in pass2.iter().enumerate() {
-        u_all[i * q..(i + 1) * q].copy_from_slice(&r.u);
-        sum_uv += r.uv;
-        if want_grad {
-            for k in 0..nth {
-                grad_ld[k] += r.grad_ld[k];
-                grad_pw[k] += r.grad_pw[k];
-            }
-        }
-    }
+    let sum_uv = acc2.uv;
+    let grad_ld = acc2.grad_ld;
+    let grad_pw = acc2.grad_pw;
 
     let beta_xty: f64 = (0..p).map(|j| beta[j] * d.xty[j]).sum();
     let pwrss = d.yty - beta_xty - sum_uv;

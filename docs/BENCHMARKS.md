@@ -23,13 +23,13 @@ Reproduce with `python bench/scaling.py` and `python bench/stages.py`.
 
 | n | groups | statsmodels | conv | mixedlm-rs | conv | speedup | agreement |
 |---:|---:|---:|:---:|---:|:---:|---:|---:|
-| 2,000 | 100 | 0.35 s | True | **0.025 s** | True | **14x** | 6.6e-06 |
-| 10,000 | 500 | 1.72 s | True | **0.033 s** | True | **52x** | 4.4e-07 |
-| 20,000 | 1,000 | 3.32 s | True | **0.046 s** | True | **72x** | 3.3e-07 |
-| 40,000 | 5,000 | 11.80 s | True | **0.107 s** | True | **110x** | 2.0e-06 |
-| 100,000 | 20,000 | 41.98 s | True | **0.638 s** | True | **66x** | 3.8e-05 |
-| 200,000 | 50,000 | 106.03 s | True | **2.019 s** | True | **53x** | 1.2e-05 |
-| 500,264 | **125,066** | not run | — | **5.840 s** | True | — | — |
+| 2,000 | 100 | 0.34 s | True | **0.012 s** | True | **27x** | 6.6e-06 |
+| 10,000 | 500 | 1.73 s | True | **0.012 s** | True | **143x** | 4.5e-07 |
+| 20,000 | 1,000 | 2.63 s | True | **0.014 s** | True | **187x** | 3.4e-07 |
+| 40,000 | 5,000 | 11.27 s | True | **0.022 s** | True | **509x** | 2.0e-06 |
+| 100,000 | 20,000 | 42.18 s | True | **0.051 s** | True | **832x** | 3.8e-05 |
+| 200,000 | 50,000 | 102.72 s | True | **0.105 s** | True | **983x** | 1.2e-05 |
+| 500,264 | **125,066** | not run | — | **0.371 s** | True | — | — |
 
 *Agreement* is the largest fixed-effect difference expressed in units of its own
 standard error.
@@ -56,27 +56,33 @@ measured on the same fixtures:
 
 | n | groups | S0 | conv | S1 | S2 | S3 | S4 | S5 | S4/S0 |
 |---:|---:|---:|:---:|---:|---:|---:|---:|---:|---:|
-| 10,000 | 500 | 5.83 s | True | 2.655 s | 0.097 s | 0.0646 s | **0.0060 s** | 0.0143 s | 972x |
-| 20,000 | 1,000 | 20.79 s | **False** | 2.110 s | 0.052 s | 0.0552 s | **0.0086 s** | 0.0229 s | 2426x |
-| 20,000 | 2,000 | 5.21 s | True | 3.583 s | 0.106 s | 0.0726 s | **0.0135 s** | 0.0641 s | 387x |
-| 40,000 | 5,000 | 14.97 s | True | 7.273 s | 0.293 s | 0.1402 s | **0.0219 s** | 0.0753 s | 684x |
-| 100,000 | 20,000 | 44.34 s | True | 36.744 s | 0.895 s | 0.6774 s | **0.1418 s** | 0.4296 s | 313x |
+| 10,000 | 500 | 6.02 s | True | 2.621 s | 0.098 s | 0.0130 s | **0.0030 s** | 0.0041 s | 2023x |
+| 20,000 | 1,000 | 21.55 s | **False** | 2.130 s | 0.052 s | 0.0114 s | **0.0034 s** | 0.0072 s | 6369x |
+| 20,000 | 2,000 | 5.35 s | True | 3.528 s | 0.106 s | 0.0131 s | **0.0041 s** | 0.0093 s | 1301x |
+| 40,000 | 5,000 | 13.72 s | True | 7.196 s | 0.294 s | 0.0275 s | **0.0096 s** | 0.0187 s | 1426x |
+| 100,000 | 20,000 | 45.07 s | True | 39.211 s | 0.925 s | 0.0801 s | **0.0244 s** | 0.0705 s | 1844x |
 
 **Median stage-to-stage multipliers:**
 
 | step | multiplier |
 |---|---:|
-| S0 → S1 profiled REML alone | **2.1x** |
-| S1 → S2 + batched block Cholesky | **33.6x** |
-| S2 → S3 + Rust core | **1.5x** |
-| S3 → S4 + analytic gradient | **6.4x** |
-| S0 → S4 end to end | **684x** |
+| S0 → S1 profiled REML alone | **1.9x** |
+| S1 → S2 + batched block Cholesky | **33.4x** |
+| S2 → S3 + Rust core | **8.0x** |
+| S3 → S4 + analytic gradient | **3.3x** |
+| S0 → S4 end to end | **1844x** |
 
-The honest headline is that **most of the win is structural, not from Rust**.
-Profiling `beta` and `sigma^2` out is worth only 2.1x on its own. Exploiting the
-block-diagonal structure so the whole system is a handful of batched operations
-is worth 33.6x. The Rust port then adds just 1.5x over batched NumPy, and the
-analytic gradient another 6.4x.
+The largest single factor is still **structural, not the language**: profiling
+`beta` and `sigma^2` out is worth only 1.9x on its own, while exploiting the
+block-diagonal structure is worth 33.4x.
+
+The Rust core's contribution was originally measured at 1.5x. It is now 8.0x —
+not because the language changed, but because the first implementation allocated
+about ten small `Vec`s per group per objective evaluation, which at 125,000
+groups is roughly a million allocations per evaluation. Moving every per-group
+intermediate into one preallocated flat buffer, with rayon fold accumulators
+instead of per-group temporaries, made a single objective evaluation 8–12x
+faster and revealed what the compiled core was actually worth.
 
 S1 and S2 are reproducible by anyone in NumPy — `proto/preml.py` is the
 implementation, in about 200 lines. Saying so is what makes the rest of the
@@ -88,14 +94,27 @@ Objective evaluations for a whole fit:
 
 | n | groups | S3 numeric | S4 analytic | S5 in-Rust optimiser |
 |---:|---:|---:|---:|---:|
-| 10,000 | 500 | 148 | **11** | 35 |
-| 20,000 | 1,000 | 88 | **11** | 36 |
-| 20,000 | 2,000 | 80 | **11** | 64 |
-| 40,000 | 5,000 | 80 | **10** | 38 |
-| 100,000 | 20,000 | 72 | **12** | 40 |
+| 10,000 | 500 | 60 | **11** | 35 |
+| 20,000 | 1,000 | 60 | **14** | 36 |
+| 20,000 | 2,000 | 44 | **11** | 36 |
+| 40,000 | 5,000 | 80 | **16** | 61 |
+| 100,000 | 20,000 | 48 | **11** | 39 |
 
 `lme4` and `MixedModels.jl` both optimise `theta` derivative-free (BOBYQA), so
 they pay the numeric-gradient evaluation count rather than the analytic one.
+
+## Objective evaluation cost
+
+The measurement that drove the flat-buffer rewrite:
+
+| groups | n | one evaluation, before | after | |
+|---:|---:|---:|---:|---|
+| 5,000 | 40,000 | 3.31 ms | **0.42 ms** | 7.9x |
+| 20,000 | 100,000 | 19.69 ms | **1.63 ms** | 12.1x |
+| 125,066 | 500,264 | 89.34 ms | **9.74 ms** | 9.2x |
+
+Objective evaluations are 80%+ of a fit, so this carries straight through to the
+end-to-end numbers.
 
 ## An honest negative result
 

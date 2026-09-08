@@ -119,11 +119,11 @@ is what stops people from mangling their model to silence a warning.
 
 | n | groups | statsmodels | mixedlm-rs | |
 |---:|---:|---:|---:|---|
-| 10,000 | 500 | 1.72 s | **0.033 s** | 52x |
-| 40,000 | 5,000 | 11.80 s | **0.107 s** | 110x |
-| 100,000 | 20,000 | 41.98 s | **0.638 s** | 66x |
-| 200,000 | 50,000 | 106.03 s | **2.019 s** | 53x |
-| 500,264 | **125,066** | — | **5.840 s** | |
+| 10,000 | 500 | 1.73 s | **0.012 s** | 143x |
+| 40,000 | 5,000 | 11.27 s | **0.022 s** | 509x |
+| 100,000 | 20,000 | 42.18 s | **0.051 s** | 832x |
+| 200,000 | 50,000 | 102.72 s | **0.105 s** | 983x |
+| 500,264 | **125,066** | — | **0.371 s** | |
 
 Every row is checked for agreement before it is timed.
 
@@ -132,14 +132,15 @@ That last row is the size from
 where a user reported waiting **41 minutes** for a fit that R's `lmer` did in
 1–2 seconds.
 
-**Where the win comes from — honestly.** It is mostly not Rust:
+**Where the win comes from — honestly.** The largest single factor is
+structural, not the language:
 
 | step | multiplier |
 |---|---:|
-| profiled REML alone | 2.1x |
-| + batched block-diagonal Cholesky | **33.6x** |
-| + Rust core | 1.5x |
-| + analytic gradient | 6.4x |
+| profiled REML alone | 1.9x |
+| + batched block-diagonal Cholesky | **33.4x** |
+| + Rust core | 8.0x |
+| + analytic gradient | 3.3x |
 
 The formulation is `lme4`'s: eliminate the fixed effects and `sigma^2`
 analytically so the optimiser sees only the 1–3 covariance parameters, and

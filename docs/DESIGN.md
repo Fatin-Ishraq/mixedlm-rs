@@ -118,6 +118,32 @@ unchanged, so the criterion surface is identical and only the coordinates move.
 What it buys is that `theta = I` is a sensible starting point whatever units the
 data is in. Results are transformed back before being returned.
 
+## Allocation, and why the Rust core is worth 8x rather than 1.5x
+
+The first working version allocated about ten small `Vec`s per group per
+objective evaluation — `ainv`, `m_mat`, `l`, `b`, `rzx`, `cu`, plus per-group
+accumulator temporaries. At 125,000 groups that is roughly a million allocations
+per evaluation, and around ten million per fit.
+
+Every per-group intermediate now lives in one flat buffer of
+`m * (3q^2 + 2qp + q)` doubles, allocated once per evaluation and split per group
+with `split_at_mut`. Intermediates are staged in place: `A` is built directly in
+the slot that will hold its Cholesky factor, and `W` is staged in the slot that
+becomes `L^-1 W`. Accumulators live in rayon `fold` state — one set per thread,
+not one per group — and `RZX'RZX` is accumulated with a direct loop rather than
+by forming a `p x p` temporary.
+
+| groups | one objective evaluation, before | after | |
+|---:|---:|---:|---|
+| 5,000 | 3.31 ms | **0.42 ms** | 7.9x |
+| 20,000 | 19.69 ms | **1.63 ms** | 12.1x |
+| 125,066 | 89.34 ms | **9.74 ms** | 9.2x |
+
+Objective evaluations are 80%+ of a fit, so this is most of the end-to-end
+number. It also changed the story the staged benchmark tells: the Rust core was
+measured at 1.5x over batched NumPy before this change and 8.0x after. The
+allocator had been hiding what the compiled core was worth.
+
 ## What is compiled, and what is not
 
 The compiled surface is deliberately small — the same discipline as the earlier
@@ -150,6 +176,8 @@ python/mixedlm_rs/_install.py            aliasing for code you cannot edit
 - **Crossed and nested random effects** break block-diagonality and need a real
   sparse Cholesky with a fill-reducing ordering. That is the largest piece of
   unfinished work and the reason this release is scoped to one grouping factor.
+- **Specialising the `q = 1` and `q = 2` cases** with fixed-size arithmetic
+  instead of the generic loops, now that allocation no longer dominates.
 - **The in-Rust optimiser** is worse than scipy's and stays a fallback.
 - **The Hessian for variance-component standard errors** is computed by
   differencing the analytic gradient. An analytic second derivative is derivable
