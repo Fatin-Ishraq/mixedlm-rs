@@ -113,34 +113,36 @@ struct BlockLayout {
 impl BlockLayout {
     fn new(q: usize, p: usize) -> Self {
         let (qq, qp) = (q * q, q * p);
-        // ainv | m_mat | l | b | rzx | cu
-        Self { qq, qp, stride: 3 * qq + 2 * qp + q }
+        // m_mat | l | rzx | cu
+        //
+        // A^-1 and B = A^-1 W are deliberately NOT stored. Because A = L L',
+        //     A^-1 = L^-T L^-1   and   B = A^-1 W = L^-T (L^-1 W) = L^-T rzx,
+        // so both are recoverable in pass 2 from `l` and `rzx` alone. The extra
+        // arithmetic is trivial and this evaluation is memory-bound, so trading
+        // q*q + q*p of traffic per group for a triangular solve is a clear win.
+        // A deviance-only call now never forms A^-1 at all.
+        Self { qq, qp, stride: 2 * qq + qp + q }
     }
 
-    /// Split one group's slice into its six named pieces.
+    /// Split one group's slice into its four named pieces.
     fn split<'a>(
         &self,
         buf: &'a mut [f64],
-    ) -> (&'a mut [f64], &'a mut [f64], &'a mut [f64], &'a mut [f64], &'a mut [f64], &'a mut [f64])
-    {
-        let (ainv, rest) = buf.split_at_mut(self.qq);
-        let (m_mat, rest) = rest.split_at_mut(self.qq);
+    ) -> (&'a mut [f64], &'a mut [f64], &'a mut [f64], &'a mut [f64]) {
+        let (m_mat, rest) = buf.split_at_mut(self.qq);
         let (l, rest) = rest.split_at_mut(self.qq);
-        let (b, rest) = rest.split_at_mut(self.qp);
         let (rzx, cu) = rest.split_at_mut(self.qp);
-        (ainv, m_mat, l, b, rzx, cu)
+        (m_mat, l, rzx, cu)
     }
 
     fn split_ref<'a>(
         &self,
         buf: &'a [f64],
-    ) -> (&'a [f64], &'a [f64], &'a [f64], &'a [f64], &'a [f64], &'a [f64]) {
-        let (ainv, rest) = buf.split_at(self.qq);
-        let (m_mat, rest) = rest.split_at(self.qq);
+    ) -> (&'a [f64], &'a [f64], &'a [f64], &'a [f64]) {
+        let (m_mat, rest) = buf.split_at(self.qq);
         let (l, rest) = rest.split_at(self.qq);
-        let (b, rest) = rest.split_at(self.qp);
         let (rzx, cu) = rest.split_at(self.qp);
-        (ainv, m_mat, l, b, rzx, cu)
+        (m_mat, l, rzx, cu)
     }
 }
 
@@ -157,6 +159,8 @@ struct Acc2 {
     uv: f64,
     grad_ld: Vec<f64>,
     grad_pw: Vec<f64>,
+    ainv: Vec<f64>,
+    b: Vec<f64>,
     bp: Vec<f64>,
     bpbt: Vec<f64>,
     g: Vec<f64>,
@@ -193,7 +197,7 @@ pub fn evaluate(d: &LmmData, theta: &[f64], reml: bool, want_grad: bool) -> Opti
                 let ztz_i = &d.ztz[i * q * q..(i + 1) * q * q];
                 let ztx_i = &d.ztx[i * q * p..(i + 1) * q * p];
                 let zty_i = &d.zty[i * q..(i + 1) * q];
-                let (ainv, m_mat, l, b, rzx, cu) = lay.split(buf);
+                let (m_mat, l, rzx, cu) = lay.split(buf);
 
                 // M = Z'Z * Lambda
                 matmul(ztz_i, &lam, m_mat, q, q, q);
@@ -207,12 +211,9 @@ pub fn evaluate(d: &LmmData, theta: &[f64], reml: bool, want_grad: bool) -> Opti
                     return acc;
                 }
                 acc.ldl2 += 2.0 * log_diag_sum(l, q);
-                chol_inverse(l, ainv, q);
 
-                // W = Lambda' * Z'X, staged in `rzx`; B = A^-1 W reads it there.
+                // W = Lambda' Z'X staged in `rzx`, then rzx <- L^-1 W in place
                 matmul_at(&lam, ztx_i, rzx, q, q, p);
-                matmul(ainv, rzx, b, q, q, p);
-                // rzx becomes L^-1 W in place
                 trsm_lower(l, rzx, q, p);
 
                 // cu = L^-1 Lambda' Z'y, in place
@@ -295,6 +296,8 @@ pub fn evaluate(d: &LmmData, theta: &[f64], reml: bool, want_grad: bool) -> Opti
                 uv: 0.0,
                 grad_ld: vec![0.0; nth],
                 grad_pw: vec![0.0; nth],
+                ainv: vec![0.0; q * q],
+                b: vec![0.0; q * p],
                 bp: vec![0.0; q * p],
                 bpbt: vec![0.0; q * q],
                 g: vec![0.0; q * q],
@@ -303,7 +306,7 @@ pub fn evaluate(d: &LmmData, theta: &[f64], reml: bool, want_grad: bool) -> Opti
             |mut acc, (i, (buf, u))| {
                 let ztx_i = &d.ztx[i * q * p..(i + 1) * q * p];
                 let zty_i = &d.zty[i * q..(i + 1) * q];
-                let (ainv, m_mat, l, b, rzx, cu) = lay.split_ref(buf);
+                let (m_mat, l, rzx, cu) = lay.split_ref(buf);
 
                 // u = L^-T (cu - RZX beta)
                 for r in 0..q {
@@ -325,8 +328,10 @@ pub fn evaluate(d: &LmmData, theta: &[f64], reml: bool, want_grad: bool) -> Opti
                 }
 
                 if want_grad {
+                    // A^-1 = L^-T L^-1, rebuilt here rather than stored
+                    chol_inverse(l, &mut acc.ainv, q);
                     // G = M * A^-1                     -> d(ldL2)
-                    matmul(m_mat, ainv, &mut acc.g, q, q, q);
+                    matmul(m_mat, &acc.ainv, &mut acc.g, q, q, q);
 
                     // t = Z'y - Z'X beta - M u         -> d(pwrss)
                     for r in 0..q {
@@ -341,12 +346,15 @@ pub fn evaluate(d: &LmmData, theta: &[f64], reml: bool, want_grad: bool) -> Opti
                     }
 
                     if reml {
-                        matmul(b, &rxtrx_inv, &mut acc.bp, q, p, p);
+                        // B = A^-1 W = L^-T (L^-1 W) = L^-T rzx
+                        acc.b.copy_from_slice(rzx);
+                        trsm_lower_t(l, &mut acc.b, q, p);
+                        matmul(&acc.b, &rxtrx_inv, &mut acc.bp, q, p, p);
                         for r in 0..q {
                             for c in 0..q {
                                 let mut s = 0.0;
                                 for x in 0..p {
-                                    s += acc.bp[r * p + x] * b[c * p + x];
+                                    s += acc.bp[r * p + x] * acc.b[c * p + x];
                                 }
                                 acc.bpbt[r * q + c] = s;
                             }
@@ -378,6 +386,8 @@ pub fn evaluate(d: &LmmData, theta: &[f64], reml: bool, want_grad: bool) -> Opti
                 uv: 0.0,
                 grad_ld: vec![0.0; nth],
                 grad_pw: vec![0.0; nth],
+                ainv: Vec::new(),
+                b: Vec::new(),
                 bp: Vec::new(),
                 bpbt: Vec::new(),
                 g: Vec::new(),

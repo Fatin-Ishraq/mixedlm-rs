@@ -23,13 +23,13 @@ Reproduce with `python bench/scaling.py` and `python bench/stages.py`.
 
 | n | groups | statsmodels | conv | mixedlm-rs | conv | speedup | agreement |
 |---:|---:|---:|:---:|---:|:---:|---:|---:|
-| 2,000 | 100 | 0.34 s | True | **0.012 s** | True | **27x** | 6.6e-06 |
-| 10,000 | 500 | 1.73 s | True | **0.012 s** | True | **143x** | 4.5e-07 |
-| 20,000 | 1,000 | 2.63 s | True | **0.014 s** | True | **187x** | 3.4e-07 |
-| 40,000 | 5,000 | 11.27 s | True | **0.022 s** | True | **509x** | 2.0e-06 |
-| 100,000 | 20,000 | 42.18 s | True | **0.051 s** | True | **832x** | 3.8e-05 |
-| 200,000 | 50,000 | 102.72 s | True | **0.105 s** | True | **983x** | 1.2e-05 |
-| 500,264 | **125,066** | not run | — | **0.371 s** | True | — | — |
+| 2,000 | 100 | 0.34 s | True | **0.011 s** | True | **30x** | 6.6e-06 |
+| 10,000 | 500 | 1.73 s | True | **0.011 s** | True | **153x** | 4.5e-07 |
+| 20,000 | 1,000 | 2.63 s | True | **0.012 s** | True | **211x** | 3.4e-07 |
+| 40,000 | 5,000 | 11.64 s | True | **0.017 s** | True | **684x** | 2.0e-06 |
+| 100,000 | 20,000 | 41.86 s | True | **0.041 s** | True | **1032x** | 3.8e-05 |
+| 200,000 | 50,000 | 103.80 s | True | **0.072 s** | True | **1449x** | 1.2e-05 |
+| 500,264 | **125,066** | not run | — | **0.180 s** | True | — | — |
 
 *Agreement* is the largest fixed-effect difference expressed in units of its own
 standard error.
@@ -113,8 +113,23 @@ The measurement that drove the flat-buffer rewrite:
 | 20,000 | 100,000 | 19.69 ms | **1.63 ms** | 12.1x |
 | 125,066 | 500,264 | 89.34 ms | **9.74 ms** | 9.2x |
 
-Objective evaluations are 80%+ of a fit, so this carries straight through to the
-end-to-end numbers.
+Objective evaluations are the largest single component of a fit, so this carries
+straight through to the end-to-end numbers.
+
+### Memory per evaluation
+
+Two of the six per-group blocks were then removed entirely. Since `A = L L'`,
+both `A^-1 = L^-T L^-1` and `B = A^-1 W = L^-T rzx` are recoverable in pass 2
+from `l` and `rzx`, so neither needs storing. The evaluation is memory-bound, so
+trading traffic for a triangular solve wins; a deviance-only call now never forms
+`A^-1` at all.
+
+| | doubles per group | at 125,066 groups |
+|---|---:|---:|
+| before | `3q² + 2qp + q` = 26 | 26.0 MB |
+| after | `2q² + qp + q` = 16 | **16.0 MB** |
+
+Deviance-only evaluation at 125,066 groups: 8.41 ms → **7.07 ms**.
 
 ## An honest negative result
 

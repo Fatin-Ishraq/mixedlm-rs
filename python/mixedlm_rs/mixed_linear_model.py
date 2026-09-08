@@ -122,8 +122,18 @@ def _vech_row(mat):
 
 def _codes_from_groups(groups):
     g = np.asarray(groups)
+    if g.ndim != 1:
+        # Catching this here turns a cryptic failure deep in the extension
+        # module into a message that names the actual mistake -- most often
+        # MixedLM(y, X, Z, groups), where the third positional argument is
+        # `groups`, not `exog_re`.
+        raise ValueError(
+            f"groups must be one-dimensional, got shape {g.shape}. "
+            "Note the signature is MixedLM(endog, exog, groups, exog_re=...) "
+            "-- the third positional argument is the grouping variable."
+        )
     uniq, codes = np.unique(g, return_inverse=True)
-    return uniq, codes.astype(np.int64)
+    return uniq, np.ascontiguousarray(codes.ravel(), dtype=np.int64)
 
 
 class MixedLM:
@@ -390,6 +400,7 @@ class MixedLMResults:
         self._random_effects = res["random_effects"]
         self._deviance = res["deviance"]
         self._bse_re_unscaled = res["bse_re_unscaled"]
+        self._compute_bse_re = res.get("compute_bse_re")
 
     # -- parameter vector, statsmodels packing ------------------------------
     @property
@@ -403,6 +414,15 @@ class MixedLMResults:
 
     @property
     def bse_re(self):
+        """Standard errors of the variance components.
+
+        Computed on first access, not during the fit: the profiled Hessian costs
+        2 * n_theta extra gradient evaluations, and most callers only look at the
+        fixed effects.
+        """
+        if self._bse_re_unscaled is None and self._compute_bse_re is not None:
+            self._bse_re_unscaled = self._compute_bse_re()
+            self._compute_bse_re = None
         m = self._bse_re_unscaled
         if m is None:
             return np.full(self.k_re2, np.nan)

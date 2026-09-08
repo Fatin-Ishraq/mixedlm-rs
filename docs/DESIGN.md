@@ -139,6 +139,13 @@ by forming a `p x p` temporary.
 | 20,000 | 19.69 ms | **1.63 ms** | 12.1x |
 | 125,066 | 89.34 ms | **9.74 ms** | 9.2x |
 
+Two of the six blocks were then dropped altogether. Because `A = L L'`, both
+`A^-1 = L^-T L^-1` and `B = A^-1 W = L^-T (L^-1 W) = L^-T rzx` can be rebuilt in
+pass 2 from `l` and `rzx`. The stride falls from `3q^2 + 2qp + q` to
+`2q^2 + qp + q` — 26 doubles per group to 16 at `q = 2, p = 3`, or 26.0 MB to
+16.0 MB per evaluation at 125,066 groups. A deviance-only call now never forms
+`A^-1` at all, which is why the criterion-only evaluation drops a further 16%.
+
 Objective evaluations are 80%+ of a fit, so this is most of the end-to-end
 number. It also changed the story the staged benchmark tells: the Rust core was
 measured at 1.5x over batched NumPy before this change and 8.0x after. The
@@ -177,7 +184,11 @@ python/mixedlm_rs/_install.py            aliasing for code you cannot edit
   sparse Cholesky with a fill-reducing ordering. That is the largest piece of
   unfinished work and the reason this release is scoped to one grouping factor.
 - **Specialising the `q = 1` and `q = 2` cases** with fixed-size arithmetic
-  instead of the generic loops, now that allocation no longer dominates.
+  instead of the generic loops. Measured headroom is real but bounded: per group
+  the evaluation moves ~300 bytes for ~150 flops, so it is close to memory-bound
+  and the remaining gain is perhaps 2x, not 10x.
+- **Parallelising cross-product construction**, currently 16 ms of a 180 ms fit
+  at 125,066 groups.
 - **The in-Rust optimiser** is worse than scipy's and stays a fallback.
 - **The Hessian for variance-component standard errors** is computed by
   differencing the analytic gradient. An analytic second derivative is derivable

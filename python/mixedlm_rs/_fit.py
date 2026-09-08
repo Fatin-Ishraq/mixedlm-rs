@@ -117,7 +117,7 @@ def _column_scales(Z):
 
 def fit_core(y, X, Z, codes, n_groups, reml=True, start_params=None,
              method=None, n_starts=3, maxiter=500, gtol=1e-8, ftol=1e-12,
-             want_se_re=True):
+             want_se_re=False):
     """Fit one grouping factor and return every derived quantity.
 
     Returns a plain dict; the estimator classes wrap it.
@@ -132,7 +132,14 @@ def fit_core(y, X, Z, codes, n_groups, reml=True, start_params=None,
     """
     Z = np.ascontiguousarray(Z, dtype=np.float64)
     dscale = _column_scales(Z)
-    Zs = np.ascontiguousarray(Z / dscale)
+    # When the columns are already on comparable scales -- which includes the
+    # very common intercept-only and standardised-predictor cases -- the
+    # rescaling is a no-op and copying an n x q array to perform it is not free
+    # at 500,000 rows. Only divide when it actually changes something.
+    if np.all(dscale == 1.0):
+        Zs = Z
+    else:
+        Zs = np.ascontiguousarray(Z / dscale)
 
     core = LmmCore(np.ascontiguousarray(y, dtype=np.float64),
                    np.ascontiguousarray(X, dtype=np.float64),
@@ -296,8 +303,14 @@ def fit_core(y, X, Z, codes, n_groups, reml=True, start_params=None,
     # profiled Hessian. lme4 declines to report these at all; statsmodels does,
     # so a drop-in has to. They are documented as coming from the profiled
     # parameterisation and may differ slightly from statsmodels' own.
-    out["bse_re_unscaled"] = None
-    if want_se_re and q > 0:
+    #
+    # This is deferred rather than computed here: the Hessian costs 2 * n_theta
+    # extra gradient evaluations -- about 28% of a whole fit -- and many callers
+    # only ever look at the fixed effects. MixedLMResults calls it on first
+    # access to bse_re and caches the result.
+    def _compute_bse_re():
+        if q == 0:
+            return None
         try:
             H = _profiled_hessian(core, theta, reml)
             # deviance = -2 logL, so the observed information is H/2.
@@ -308,13 +321,16 @@ def fit_core(y, X, Z, codes, n_groups, reml=True, start_params=None,
             for vi, (a, b) in enumerate(vech):
                 J[vi, :] *= Dinv[a] * Dinv[b]
             cov_vech = J @ cov_theta @ J.T
-            d = np.diag(cov_vech)
-            se = np.sqrt(np.where(d > 0, d, np.nan))
+            dg = np.diag(cov_vech)
+            se = np.sqrt(np.where(dg > 0, dg, np.nan))
             M = np.full((q, q), np.nan)
             for vi, (a, b) in enumerate(vech):
                 M[a, b] = M[b, a] = se[vi]
-            out["bse_re_unscaled"] = M
+            return M
         except (np.linalg.LinAlgError, ValueError):
-            out["bse_re_unscaled"] = np.full((q, q), np.nan)
+            return np.full((q, q), np.nan)
+
+    out["compute_bse_re"] = _compute_bse_re
+    out["bse_re_unscaled"] = _compute_bse_re() if want_se_re else None
 
     return out

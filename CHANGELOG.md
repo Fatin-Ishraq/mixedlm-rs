@@ -27,6 +27,9 @@ First release. Linear mixed-effects models with one grouping factor, matching
   preallocated buffer rather than ~10 small `Vec`s, with rayon fold accumulators
   instead of per-group temporaries. A single objective evaluation is 8-12x
   faster as a result, which is most of a fit.
+- **Variance-component standard errors are computed on first access**, not
+  during the fit: the profiled Hessian costs `2 * n_theta` extra gradient
+  evaluations and most callers only read the fixed effects.
 - **Lazy multi-start.** Extra starting values are tried only when the first fails
   to converge; measured across 120 randomised fixtures, an unconditional 3-way
   multi-start produced identical outcomes for 1.4x the objective evaluations.
