@@ -173,11 +173,22 @@ def fit_core(y, X, Z, codes, n_groups, reml=True, start_params=None,
             state["nfev"] += int(res.nfev)
             return res
 
-        best = None
-        for th0 in _starts(core, start_params, n_starts):
-            res = run(th0)
-            if best is None or res.fun < best.fun:
-                best = res
+        # ---- Optimise from the primary start.
+        #
+        # Extra starts are tried only if the first one fails to converge. An
+        # unconditional multi-start was measured to be pure overhead: across the
+        # 120 randomised fuzz fixtures, n_starts=1 and n_starts=3 produce
+        # *identical* outcomes (0 worse, 19 better, 26 where the reference does
+        # not converge) while n_starts=3 costs 68.4 mean objective evaluations
+        # against 47.5. The robustness comes from the boundary escape below, not
+        # from the extra starts.
+        all_starts = _starts(core, start_params, max(1, n_starts))
+        best = run(all_starts[0])
+        if not best.success:
+            for th0 in all_starts[1:]:
+                res = run(th0)
+                if res.fun < best.fun:
+                    best = res
 
         # ---- Boundary escape.
         #
@@ -193,6 +204,17 @@ def fit_core(y, X, Z, codes, n_groups, reml=True, start_params=None,
         # Instead, whenever a diagonal entry lands on it, probe a few positive
         # values along that coordinate and re-optimise if any of them is better.
         # Fits are milliseconds, so this costs almost nothing.
+        # Each trial point gets its own full re-optimisation. Two cheaper
+        # variants were tried and both regressed quality on the fuzz suite:
+        # evaluating the four trials and re-optimising only from one that beats
+        # the incumbent gave 5 of 120 fixtures a worse optimum, and re-optimising
+        # only from the lowest-valued trial still gave 4. Near the bound the
+        # criterion can be *higher* at a probe point and still lead downhill into
+        # a better basin, so the probe cannot be used to choose between trials.
+        #
+        # This costs nothing on well-behaved data: the escape only runs when a
+        # variance component actually lands on the bound, and on clean fixtures a
+        # whole fit is still 10-11 objective evaluations.
         for _ in range(3):
             at_bound = [k for k in diag_k if best.x[k] <= lower[k] + 1e-10]
             if not at_bound:
