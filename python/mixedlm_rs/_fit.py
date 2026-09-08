@@ -131,6 +131,29 @@ def fit_core(y, X, Z, codes, n_groups, reml=True, start_params=None,
     so nothing about this is visible to the caller.
     """
     Z = np.ascontiguousarray(Z, dtype=np.float64)
+
+    # lme4 refuses a model with at least as many random effects as observations,
+    # on the grounds that the variance parameters and the residual variance are
+    # then unidentifiable. It is exactly right: with q random effects per group
+    # and q observations in each, every group is fitted perfectly, the residual
+    # variance is driven towards zero and the profiled likelihood diverges rather
+    # than attaining a maximum. Two implementations will simply stop at different
+    # points along that path and neither answer means anything.
+    #
+    # statsmodels fits these silently, so refusing outright would break the
+    # drop-in contract; we warn instead, which is the part that actually protects
+    # the user.
+    n_obs, q_re = Z.shape
+    if n_obs <= q_re * int(n_groups):
+        warnings.warn(
+            f"the random-effects structure is not identifiable: {n_obs} "
+            f"observations against {q_re * int(n_groups)} random effects "
+            f"({q_re} per group x {int(n_groups)} groups). The residual variance "
+            "and the variance components cannot be separated, and the reported "
+            "estimates are arbitrary points on a divergent likelihood. Use fewer "
+            "random-effect terms, or more observations per group.",
+            ConvergenceWarning, stacklevel=3)
+
     dscale = _column_scales(Z)
     # When the columns are already on comparable scales -- which includes the
     # very common intercept-only and standardised-predictor cases -- the
@@ -219,6 +242,12 @@ def fit_core(y, X, Z, codes, n_groups, reml=True, start_params=None,
         # criterion can be *higher* at a probe point and still lead downhill into
         # a better basin, so the probe cannot be used to choose between trials.
         #
+        # The ladder reaches down to 1e-3 because a variance component can be
+        # genuinely small rather than zero. With trials starting at 0.05, a true
+        # optimum at theta = 0.028 was missed: every probe overshot it, and the
+        # optimiser slid back into the stationary point at the bound. Found by the
+        # wider stress sweep, not by the committed fuzz suite.
+        #
         # This costs nothing on well-behaved data: the escape only runs when a
         # variance component actually lands on the bound, and on clean fixtures a
         # whole fit is still 10-11 objective evaluations.
@@ -228,7 +257,7 @@ def fit_core(y, X, Z, codes, n_groups, reml=True, start_params=None,
                 break
             improved = False
             for k in at_bound:
-                for trial in (0.05, 0.2, 0.6, 1.5):
+                for trial in (1e-3, 1e-2, 0.05, 0.2, 0.6, 1.5):
                     cand = np.array(best.x, float)
                     cand[k] = trial
                     res = run(cand)

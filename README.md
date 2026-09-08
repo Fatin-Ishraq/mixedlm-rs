@@ -181,14 +181,20 @@ do `fe_pen`, `cov_pen` and `free`. GLMMs are out of scope.
 ## Is it actually the same?
 
 That is the only question that matters for a drop-in, so it is what the test
-suite is built around — **206 Python tests and 7 Rust tests**.
+suite is built around — **222 Python tests and 7 Rust tests**.
 
 The primary oracle is **lme4's published fits**, not statsmodels, because
 statsmodels is the thing that is wrong on some inputs. `sleepstudy`, `Dyestuff`
 and the singular `Dyestuff2` are reproduced to every published digit, under both
 REML and ML.
 
-Differential testing found two real defects during development:
+A further 400-case adversarial sweep — tiny groups, extreme imbalance,
+predictors spanning six orders of magnitude, near-collinear fixed effects,
+heavy outliers — raised **zero exceptions**, and found a better optimum than
+statsmodels 106 times against 3 losses, all of which are ties or unidentifiable
+models.
+
+Differential testing found four real defects during development:
 
 - **`fittedvalues` returned the marginal fit.** statsmodels' is the *conditional*
   fit, including the random effects.
@@ -197,6 +203,11 @@ Differential testing found two real defects during development:
   that reaches the bound stops there and reports success — even when the true
   optimum is an ordinary non-zero variance. Fixed by probing away from the bound
   and restarting.
+- **That probe ladder was then too coarse.** Its smallest step was 0.05, so a
+  true optimum at `theta = 0.028` was still missed — every probe overshot it.
+- **Unidentifiable models were fitted silently.** With `n <= q * m` the
+  likelihood diverges rather than attaining a maximum; `lme4` refuses these
+  outright, and we now warn.
 
 [What is verified, and every divergence →](docs/CORRECTNESS.md)
 

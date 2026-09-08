@@ -37,8 +37,12 @@ First release. Linear mixed-effects models with one grouping factor, matching
   of statsmodels is left untouched.
 - Wheels: one `abi3` wheel per platform covering Python 3.10 through 3.14.
 
+- **Identifiability warning** when `n <= q * m`, where the residual variance and
+  the variance components cannot be separated and the profiled likelihood
+  diverges. `lme4` refuses such models; `statsmodels` fits them silently.
+
 Verified against lme4's published fits for `sleepstudy`, `Dyestuff` and the
-singular `Dyestuff2`, under both REML and ML. 206 Python tests, 7 Rust tests.
+singular `Dyestuff2`, under both REML and ML. 222 Python tests, 7 Rust tests.
 
 Not implemented, and raising rather than ignored: variance components
 (`vc_formula` / `exog_vc`), `fe_pen`, `cov_pen`, `free`, `profile_re`,

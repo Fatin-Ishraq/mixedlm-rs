@@ -76,6 +76,56 @@ Variance-component standard errors agree with statsmodels to within 5%, and on
 `sleepstudy` to about five decimal places
 (0.464239 / 0.071136 / 0.023817 against 0.464246 / 0.071137 / 0.023817).
 
+## Adversarial stress sweep
+
+A wider sweep than the committed fuzz suite: 400 cases across six deliberately
+hostile shapes -- many groups of exactly two observations, extreme imbalance
+(one huge group among tiny ones), a handful of very large groups, predictors
+spanning six orders of magnitude, near-collinear fixed effects, and heavy
+outliers.
+
+| outcome | count |
+|---|---:|
+| we raised an exception | **0** |
+| statsmodels failed or did not converge | 71 |
+| we found a strictly better optimum | **106** |
+| same optimum | 220 |
+| we found a worse optimum | 3 |
+
+Of the three: two are models where `n = q * m` exactly, which are unidentifiable
+and now warn (see below) -- the likelihood diverges there rather than attaining
+a maximum, so comparing optima is meaningless. The third is a genuine near-tie
+on a near-collinear surface, differing by 8.6e-06 in relative terms.
+
+This sweep found two defects that the narrower 120-case suite did not.
+
+**The boundary-escape ladder was too coarse.** Its smallest probe was 0.05, so a
+true optimum at `theta = 0.028` was unreachable: every probe overshot it and the
+optimiser slid back into the stationary point at zero. The ladder now reaches
+down to 1e-3.
+
+**Unidentifiable models were fitted silently.** See below.
+
+## Identifiability
+
+With at least as many random effects as observations (`n <= q * m`), every group
+is fitted perfectly, the residual variance is driven towards zero and the
+profiled likelihood **diverges** instead of attaining a maximum. Two
+implementations will simply stop at different points along that path, and
+neither answer means anything.
+
+`lme4` refuses such models outright. `statsmodels` fits them silently. Refusing
+would break the drop-in contract, so we warn -- which is the part that actually
+protects the user.
+
+A related non-finding, worth recording because it looks like a bug and is not:
+a variance component estimated as **exactly zero is often correct**. The REML
+estimate legitimately sits on the boundary whenever the observed between-group
+spread is no larger than sampling noise would produce. On one such fixture
+statsmodels returns exactly 0.0 as well, with a likelihood identical to ours to
+eight decimal places. The property worth asserting is the criterion, not the
+parameter.
+
 ## The analytic gradient
 
 This is the one place the project goes beyond its references, so it is the most
@@ -133,7 +183,7 @@ fixable in-tree.
 pip install maturin pytest numpy scipy pandas patsy statsmodels
 python -m maturin build --release --out dist
 pip install --force-reinstall --no-deps --no-index --find-links dist mixedlm-rs
-pytest tests/ -q      # 206 tests
+pytest tests/ -q      # 222 tests
 cargo test --lib      # 7 tests
 ```
 
