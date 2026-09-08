@@ -1,20 +1,24 @@
 """The staged benchmark that makes the contribution legible.
 
 Reporting a single "Nx faster than statsmodels" number would misattribute the
-win. Each stage below is measured on the same fixtures so the algorithmic,
-structural, language and gradient contributions can be read off separately:
+win. Each stage is measured on the same fixtures so the algorithmic, structural,
+language and gradient contributions can be read off separately:
 
-  S0  statsmodels.MixedLM                              baseline
-  S1  profiled REML, pure NumPy, per-group Python loop  the algorithmic win
-  S2  S1 + batched block-diagonal linear algebra        the structural win
-  S3  Rust core, numeric gradient (scipy L-BFGS-B)      the language win
-  S4  Rust core, analytic gradient (scipy L-BFGS-B)     the beyond-lme4 win
-  S5  Rust core, analytic gradient, in-Rust optimiser   owning the loop
+  S0  statsmodels.MixedLM                               baseline
+  S1  profiled REML, pure NumPy, per-group Python loop   the algorithmic win
+  S2  S1 + batched block-diagonal linear algebra         the structural win
+  S3  Rust core, numeric gradient (scipy L-BFGS-B)       the language win
+  S4  Rust core, analytic gradient (scipy L-BFGS-B)      the beyond-lme4 win
+  S5  Rust core, analytic gradient, in-Rust optimiser    owning the whole loop
 
-Convergence status is reported for every row. Where the reference does not
-converge, a speedup ratio is not a meaningful comparison and is labelled.
+S1 and S2 are reproducible by anyone in NumPy. Saying so openly is what makes
+the rest of the table credible.
+
+Convergence status is reported for every row: where statsmodels does not
+converge, a speedup ratio compares against a fit that did not happen.
 """
 
+import pathlib
 import sys
 import time
 import warnings
@@ -24,11 +28,14 @@ import pandas as pd
 from scipy.optimize import minimize
 
 warnings.filterwarnings("ignore")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "proto"))
 
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1] / "proto"))
+import preml  # noqa: E402
+import statsmodels.formula.api as smf  # noqa: E402
 
 from mixedlm_rs import LmmCore  # noqa: E402
-import statsmodels.formula.api as smf  # noqa: E402
+
+CASES = [(500, 20), (1000, 20), (2000, 10), (5000, 8), (20000, 5)]
 
 
 def make(ngroups, nper, seed=0):
@@ -51,104 +58,107 @@ def timeit(fn, repeat=3):
     for _ in range(repeat):
         t0 = time.perf_counter()
         out = fn()
-        dt = time.perf_counter() - t0
-        best = min(best, dt)
+        best = min(best, time.perf_counter() - t0)
     return best, out
 
 
-def s0_statsmodels(df):
+def s0(df):
     r = smf.mixedlm("y ~ x1 + x2", df, groups=df["g"], re_formula="~x1").fit()
-    return np.asarray(r.fe_params, float), bool(r.converged)
+    return np.asarray(r.fe_params, float), bool(r.converged), int(getattr(r, "nit", 0) or 0)
 
 
-def s1_s2_numpy(y, X, Z, codes, batched):
-    import preml
-    preml_fn = preml.fit_lmm
-    if not batched:
-        raise RuntimeError("S1 requires the unbatched build; see note in the report")
-    r = preml_fn(y, X, Z, codes, reml=True)
-    return r["beta"], r["converged"]
+def s1(y, X, Z, codes):
+    r = preml.fit_lmm_looped(y, X, Z, codes, reml=True)
+    return r["beta"], r["converged"], r["nfev"]
 
 
-def s3_s4_scipy(core, analytic):
-    lower = core.lower_bounds()
-    bounds = [(0.0, None) if np.isfinite(l) else (None, None) for l in lower]
+def s2(y, X, Z, codes):
+    r = preml.fit_lmm(y, X, Z, codes, reml=True)
+    return r["beta"], r["converged"], r["nfev"]
+
+
+def s3_s4(core, analytic):
+    bounds = [(0.0, None) if np.isfinite(v) else (None, None)
+              for v in core.lower_bounds()]
     th0 = core.default_theta()
     if analytic:
-        def obj(t):
-            f, g = core.deviance_grad(list(t), True)
-            return f, np.asarray(g)
-        res = minimize(obj, th0, jac=True, method="L-BFGS-B", bounds=bounds,
-                       options={"ftol": 1e-12, "gtol": 1e-8, "maxiter": 500})
+        res = minimize(lambda t: tuple(
+            (lambda fg: (fg[0], np.asarray(fg[1])))(core.deviance_grad(list(t), True))),
+            th0, jac=True, method="L-BFGS-B", bounds=bounds,
+            options={"ftol": 1e-12, "gtol": 1e-8, "maxiter": 500})
     else:
-        def obj(t):
-            return core.deviance(list(t), True)
-        res = minimize(obj, th0, method="L-BFGS-B", bounds=bounds,
+        res = minimize(lambda t: core.deviance(list(t), True), th0,
+                       method="L-BFGS-B", bounds=bounds,
                        options={"ftol": 1e-12, "gtol": 1e-8, "maxiter": 500})
     sol = core.solution(list(res.x), True)
-    return sol["beta"], bool(res.success), int(res.nfev)
+    return np.asarray(sol["beta"]), bool(res.success), int(res.nfev)
 
 
-def s5_rust(core, n_starts=1):
-    th0 = np.asarray(core.default_theta())
-    starts = list(th0)
-    if n_starts > 1:
-        rng = np.random.default_rng(0)
-        nth = core.n_theta
-        for _ in range(n_starts - 1):
-            c = th0 * rng.uniform(0.3, 2.5, nth)
-            starts.extend(list(c))
-    sol = core.fit(starts, True, 300, 1e-8, 1e-12)
-    return sol["beta"], bool(sol["converged"]), int(sol["fev"])
+def s5(core):
+    sol = core.fit(core.default_theta(), True, 300, 1e-8, 1e-12)
+    return np.asarray(sol["beta"]), bool(sol["converged"]), int(sol["fev"])
 
 
 def run_case(ngroups, nper):
     df, y, X, Z, codes, m = make(ngroups, nper)
     core = LmmCore(y, X, Z, codes, m)
-
-    t0, (b0, c0) = timeit(lambda: s0_statsmodels(df), repeat=1)
-    t2, (b2, c2) = timeit(lambda: s1_s2_numpy(y, X, Z, codes, True))
-    t3, (b3, c3, f3) = timeit(lambda: s3_s4_scipy(core, False))
-    t4, (b4, c4, f4) = timeit(lambda: s3_s4_scipy(core, True))
-    t5, (b5, c5, f5) = timeit(lambda: s5_rust(core))
-
-    return {
-        "n": ngroups * nper, "groups": ngroups,
-        "S0": (t0, c0, b0), "S2": (t2, c2, b2),
-        "S3": (t3, c3, b3, f3), "S4": (t4, c4, b4, f4), "S5": (t5, c5, b5, f5),
-    }
+    out = {"n": ngroups * nper, "groups": ngroups}
+    out["S0"] = (*timeit(lambda: s0(df), 1),)
+    out["S1"] = (*timeit(lambda: s1(y, X, Z, codes), 1),)
+    out["S2"] = (*timeit(lambda: s2(y, X, Z, codes)),)
+    out["S3"] = (*timeit(lambda: s3_s4(core, False)),)
+    out["S4"] = (*timeit(lambda: s3_s4(core, True)),)
+    out["S5"] = (*timeit(lambda: s5(core)),)
+    return out
 
 
-if __name__ == "__main__":
-    cases = [(500, 20), (1000, 20), (2000, 10), (5000, 8), (20000, 5)]
-    rows = [run_case(*c) for c in cases]
+def main():
+    rows = [run_case(*c) for c in CASES]
+    t = lambda r, k: r[k][0]          # noqa: E731
+    beta = lambda r, k: r[k][1][0]    # noqa: E731
+    conv = lambda r, k: r[k][1][1]    # noqa: E731
+    fev = lambda r, k: r[k][1][2]     # noqa: E731
 
-    print("\nAgreement check (max |beta| difference vs statsmodels, converged cases only)")
-    print("-" * 78)
+    print("\nAgreement: max |beta| difference, mixedlm-rs vs statsmodels")
+    print("-" * 80)
     for r in rows:
-        d = np.max(np.abs(r["S5"][2] - r["S0"][2]))
-        flag = "" if r["S0"][1] else "   <- statsmodels did NOT converge"
+        d = np.max(np.abs(beta(r, "S4") - beta(r, "S0")))
+        flag = "" if conv(r, "S0") else "   <- statsmodels did NOT converge"
         print(f"  n={r['n']:>7,d} groups={r['groups']:>6,d}   max|dbeta| = {d:.2e}{flag}")
 
-    print("\nStaged timings (seconds, best of 3; S0 single run)")
-    print("-" * 100)
-    hdr = f"{'n':>8s} {'groups':>7s} | {'S0 sm':>9s} {'cv':>5s} | {'S2 numpy':>9s} | " \
-          f"{'S3 rust/num':>11s} | {'S4 rust/grad':>12s} | {'S5 all-rust':>11s} | {'S5 vs S0':>9s}"
-    print(hdr)
-    print("-" * 100)
+    print("\nStaged timings (seconds; best of 3, S0/S1 single run)")
+    print("-" * 108)
+    print(f"{'n':>8s} {'groups':>7s} | {'S0 sm':>9s} {'cv':>5s} | {'S1 loop':>8s} | "
+          f"{'S2 batch':>8s} | {'S3 rust':>8s} | {'S4 grad':>8s} | {'S5 rustopt':>10s} | {'S4/S0':>6s}")
+    print("-" * 108)
     for r in rows:
-        s0, s2, s3, s4, s5 = r["S0"], r["S2"], r["S3"], r["S4"], r["S5"]
-        print(f"{r['n']:8,d} {r['groups']:7,d} | {s0[0]:8.2f}s {str(s0[1])[:5]:>5s} | "
-              f"{s2[0]:8.3f}s | {s3[0]:10.4f}s | {s4[0]:11.4f}s | {s5[0]:10.4f}s | "
-              f"{s0[0]/s5[0]:8.0f}x")
-    print("-" * 100)
+        print(f"{r['n']:8,d} {r['groups']:7,d} | {t(r,'S0'):8.2f}s {str(conv(r,'S0'))[:5]:>5s} | "
+              f"{t(r,'S1'):7.3f}s | {t(r,'S2'):7.3f}s | {t(r,'S3'):7.4f}s | "
+              f"{t(r,'S4'):7.4f}s | {t(r,'S5'):9.4f}s | {t(r,'S0')/t(r,'S4'):5.0f}x")
+    print("-" * 108)
 
-    print("\nObjective evaluations (lower is better; this is what the analytic gradient buys)")
+    med = lambda f: float(np.median([f(r) for r in rows]))  # noqa: E731
+    print("\nStage-to-stage multipliers (median across fixtures)")
+    print(f"  S0 -> S1   profiled REML alone           {med(lambda r: t(r,'S0')/t(r,'S1')):8.1f}x")
+    print(f"  S1 -> S2   + batched block Cholesky      {med(lambda r: t(r,'S1')/t(r,'S2')):8.1f}x")
+    print(f"  S2 -> S3   + Rust core                   {med(lambda r: t(r,'S2')/t(r,'S3')):8.1f}x")
+    print(f"  S3 -> S4   + analytic gradient           {med(lambda r: t(r,'S3')/t(r,'S4')):8.1f}x")
+    print(f"  S0 -> S4   end to end                    {med(lambda r: t(r,'S0')/t(r,'S4')):8.1f}x")
+
+    print("\nObjective evaluations -- what the analytic gradient actually buys")
     print(f"{'n':>8s} {'groups':>7s} | {'S3 numeric':>11s} | {'S4 analytic':>12s} | {'S5 in-rust':>11s}")
     print("-" * 60)
     for r in rows:
-        print(f"{r['n']:8,d} {r['groups']:7,d} | {r['S3'][3]:11d} | {r['S4'][3]:12d} | {r['S5'][3]:11d}")
+        print(f"{r['n']:8,d} {r['groups']:7,d} | {fev(r,'S3'):11d} | "
+              f"{fev(r,'S4'):12d} | {fev(r,'S5'):11d}")
 
-    nonconv = [r for r in rows if not r["S0"][1]]
-    print(f"\nstatsmodels failed to converge on {len(nonconv)}/{len(rows)} fixtures; "
-          f"mixedlm-rs converged on {sum(1 for r in rows if r['S5'][1])}/{len(rows)}")
+    nc = sum(1 for r in rows if not conv(r, "S0"))
+    print(f"\nstatsmodels failed to converge on {nc}/{len(rows)} fixtures; "
+          f"mixedlm-rs converged on {sum(1 for r in rows if conv(r,'S4'))}/{len(rows)}")
+    print("\nNote: S5 (in-Rust optimiser) needs ~3x the objective evaluations of S4,")
+    print("      because scipy's L-BFGS-B line search is better than the hand-rolled")
+    print("      projected one. S4 is therefore the default path; see docs/DESIGN.md.")
+
+
+if __name__ == "__main__":
+    main()

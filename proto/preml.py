@@ -22,7 +22,8 @@ from __future__ import annotations
 import numpy as np
 from scipy.optimize import minimize
 
-__all__ = ["LMMData", "profiled_deviance", "fit_lmm"]
+__all__ = ["LMMData", "profiled_deviance", "fit_lmm",
+           "profiled_deviance_looped", "fit_lmm_looped"]
 
 _LOG2PI = np.log(2.0 * np.pi)
 
@@ -246,4 +247,61 @@ def fit_lmm(y, X, Z, groups, reml=True, theta0=None, n_starts=1, tol=1e-10):
         "nfev": int(best.nfev),
         "n": d.n, "p": d.p, "q": d.q, "m": d.m,
     })
+    return sol
+
+
+def profiled_deviance_looped(theta, d: LMMData, reml=True):
+    """S1 reference: identical maths, one Python-level iteration per group.
+
+    Kept so the staged benchmark can show what the algorithmic change is worth
+    *before* the block structure is exploited.  This is the shape statsmodels
+    uses -- and it is only ~2x faster than statsmodels, which is the point: the
+    profiled formulation alone does not explain the win.
+    """
+    q, p, n, m = d.q, d.p, d.n, d.m
+    Lam = theta_to_lambda(theta, q)
+    ldL2 = 0.0
+    RZX_all = np.empty((m, q, p)); cu_all = np.empty((m, q)); Ls = np.empty((m, q, q))
+    sum_pp = np.zeros((p, p)); sum_p = np.zeros(p)
+    for i in range(m):
+        A = Lam.T @ d.ZtZ[i] @ Lam
+        A.flat[:: q + 1] += 1.0
+        try:
+            L = np.linalg.cholesky(A)
+        except np.linalg.LinAlgError:
+            return np.inf
+        Ls[i] = L
+        ldL2 += 2.0 * np.log(np.diag(L)).sum()
+        RZX = np.linalg.solve(L, Lam.T @ d.ZtX[i])
+        cu = np.linalg.solve(L, Lam.T @ d.Zty[i])
+        RZX_all[i] = RZX; cu_all[i] = cu
+        sum_pp += RZX.T @ RZX; sum_p += RZX.T @ cu
+    RXtRX = d.XtX - sum_pp
+    try:
+        RX = np.linalg.cholesky(RXtRX)
+    except np.linalg.LinAlgError:
+        return np.inf
+    beta = np.linalg.solve(RX.T, np.linalg.solve(RX, d.Xty - sum_p))
+    u = np.empty((m, q))
+    for i in range(m):
+        u[i] = np.linalg.solve(Ls[i].T, cu_all[i] - RZX_all[i] @ beta)
+    pwrss = d.yty - float(beta @ d.Xty) - float((u * (d.Zty @ Lam)).sum())
+    if not np.isfinite(pwrss) or pwrss <= 0.0:
+        return np.inf
+    dfree = n - p if reml else n
+    dev = ldL2 + (2.0 * np.log(np.diag(RX)).sum() if reml else 0.0)
+    return dev + dfree * (1.0 + _LOG2PI + np.log(pwrss / dfree))
+
+
+def fit_lmm_looped(y, X, Z, groups, reml=True):
+    """S1: profiled REML driven by scipy, with the per-group Python loop."""
+    d = LMMData(y, X, Z, groups)
+    lo = _bounds(d.q)[1]
+    bounds = [(0.0, None) if np.isfinite(l) else (None, None) for l in lo]
+    res = minimize(profiled_deviance_looped, _default_theta0(d.q), args=(d, reml),
+                   method="L-BFGS-B", bounds=bounds,
+                   options={"ftol": 1e-10, "gtol": 1e-8, "maxiter": 10000})
+    dev, sol = profiled_deviance(res.x, d, reml, want_solution=True)
+    sol.update({"theta": res.x, "deviance": dev, "converged": bool(res.success),
+                "nfev": int(res.nfev), "nit": int(res.nit)})
     return sol
