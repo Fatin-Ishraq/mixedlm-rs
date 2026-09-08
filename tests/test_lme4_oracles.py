@@ -105,26 +105,37 @@ def test_dyestuff2_is_singular_and_still_converges():
     assert r.converged, "a boundary optimum is a converged fit, not a failure"
 
 
-def test_dyestuff2_residual_variance_agrees_with_statsmodels():
-    """Cross-check the residual variance against an independent implementation.
+def test_dyestuff2_residual_matches_lme4():
+    """The residual SD on the singular fit, verified against a live lme4 run.
 
-    See docs/CORRECTNESS.md, open question OQ-1: the residual standard deviation
-    printed for this dataset in the lme4 literature (3.653) corresponds to
-    SST/n, while both this package and statsmodels compute SST/(n - p) = 3.716
-    under REML. Our REML criterion matches lme4's published 161.8283 exactly,
-    which is only consistent with the n - p divisor, so the printed value is
-    believed to be a display convention rather than a disagreement -- but it is
-    recorded as unverified until checked against a live R installation.
+    This was once recorded as an open question, on a belief that the lme4
+    literature printed 3.653 here against our 3.7157. Checked on R 4.6.1 with
+    lme4, the reference actually reports:
+
+        REML criterion 161.8283   sigma 3.715684   Batch var 0   intercept 5.6656
+
+    so there was never a discrepancy -- the remembered figure corresponded to
+    SST/n rather than the REML divisor SST/(n-1). Pinned here so the claim
+    cannot quietly drift.
     """
+    d = load("Dyestuff2")
+    ours = mlm.mixedlm("Yield ~ 1", d, groups=d["Batch"]).fit()
+    assert np.sqrt(ours.scale) == pytest.approx(3.715684, abs=1e-6)
+    assert ours.scale == pytest.approx(13.80631, abs=1e-5)
+
+    # and it is exactly SST/(n-1), the REML residual for a singular fit
+    y = d["Yield"].to_numpy(float)
+    sst = ((y - y.mean()) ** 2).sum()
+    assert ours.scale == pytest.approx(sst / (len(y) - 1), rel=1e-10)
+
+
+def test_dyestuff2_residual_agrees_with_statsmodels_too():
+    """Independent third implementation, as a further check on the above."""
     statsmodels = pytest.importorskip("statsmodels.formula.api")
     d = load("Dyestuff2")
     ours = mlm.mixedlm("Yield ~ 1", d, groups=d["Batch"]).fit()
     theirs = statsmodels.mixedlm("Yield ~ 1", d, groups=d["Batch"]).fit()
     assert ours.scale == pytest.approx(theirs.scale, rel=1e-8)
-
-    y = d["Yield"].to_numpy(float)
-    sst = ((y - y.mean()) ** 2).sum()
-    assert ours.scale == pytest.approx(sst / (len(y) - 1), rel=1e-10)
 
 
 # ------------------------------------------------------- criterion invariants

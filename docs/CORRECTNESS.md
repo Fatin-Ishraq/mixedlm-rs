@@ -22,7 +22,8 @@ So the bar is split:
 ## Primary oracle: lme4's published datasets
 
 From Bates, Mächler, Bolker & Walker (2015), *Fitting Linear Mixed-Effects
-Models Using lme4*, JSS 67(1). Reproduced exactly:
+Models Using lme4*, JSS 67(1), and confirmed against a live R 4.6.1 + lme4
+install. Reproduced exactly:
 
 | dataset | model | quantity | lme4 | mixedlm-rs |
 |---|---|---|---:|---:|
@@ -38,9 +39,10 @@ Models Using lme4*, JSS 67(1). Reproduced exactly:
 | | | (Intercept) | 1527.5 | **1527.5000** |
 | | | sd(Batch) | 42.00 | **42.0006** |
 | | | sd(Residual) | 49.51 | **49.5101** |
-| `Dyestuff2` | `Yield ~ 1 + (1\|Batch)` | REML criterion | 161.83 | **161.8283** |
+| `Dyestuff2` | `Yield ~ 1 + (1\|Batch)` | REML criterion | 161.8283 | **161.8283** |
 | | | (Intercept) | 5.6656 | **5.6656** |
 | | | var(Batch) | 0 (singular) | **0.0 exactly** |
+| | | sd(Residual) | 3.715684 | **3.715684** |
 
 `Dyestuff2` is the important one: the optimum sits exactly on the boundary. This
 is where statsmodels emits `Random effects covariance is singular` and `The MLE
@@ -163,14 +165,20 @@ be statsmodels 0.15.0 would fix one version check and lie to every other.
 
 ## Open questions
 
-**OQ-1 — the `Dyestuff2` residual standard deviation.** The lme4 literature
-prints 3.653 for this dataset, which corresponds to `SST / n`. Both this package
-and statsmodels compute `SST / (n - p)` = 3.7157 under REML, agreeing to nine
-significant figures. Our REML criterion matches lme4's published 161.8283
-exactly, and that value is only consistent with the `n - p` divisor — so the
-printed figure is believed to be a display convention rather than a
-disagreement. **This has not been checked against a live R installation** and is
-recorded here as unverified rather than asserted in a test.
+**OQ-1 — RESOLVED.** This previously recorded a suspected discrepancy in the
+`Dyestuff2` residual standard deviation: the value 3.653 was believed to be in
+the lme4 literature, against 3.7157 computed here and by statsmodels. Checked
+against a live R 4.6.1 install with lme4:
+
+```
+REML criterion: 161.8283      sigma: 3.715684      residual var: 13.80631
+Batch var: 0                  intercept: 5.6656    SST/(n-1): 13.80631
+```
+
+lme4 reports **3.715684**, agreeing with this package exactly. There was no
+discrepancy -- the 3.653 figure was a misremembering, and it corresponds to
+`SST/n` rather than the REML divisor `SST/(n-1)`. The row is now in the oracle
+table above.
 
 **OQ-2 — statsmodels#9097.** The issue body (41 minutes vs 1–2 seconds for
 `lmer`, 125,066 groups) and its open status were verified; the comment thread
