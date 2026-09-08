@@ -132,6 +132,30 @@ That last row is the size from
 where a user reported waiting **41 minutes** for a fit that R's `lmer` did in
 1–2 seconds.
 
+### Faster than lme4 itself
+
+`statsmodels` is what this replaces, but `lme4` in R is the strongest
+implementation in the market, and `pymer4` — which calls `lme4` through rpy2 —
+is the only way a Python user gets genuine `lme4` results today. Same models,
+byte-identical data:
+
+| n | groups | mixedlm-rs | lme4 (R) | pymer4 | vs lme4 | vs pymer4 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 10,000 | 500 | **0.010 s** | 0.080 s | 1.71 s | 8x | 166x |
+| 40,000 | 5,000 | **0.017 s** | 0.330 s | 11.67 s | 19x | 683x |
+| 100,000 | 20,000 | **0.038 s** | 1.120 s | 118.10 s | 30x | 3,127x |
+| 200,000 | 50,000 | **0.078 s** | 2.510 s | 747.28 s | 32x | 9,554x |
+| 500,264 | **125,066** | **0.169 s** | 7.330 s | — | **43x** | — |
+
+**The log-likelihood matches `lme4` to six decimals on every fixture.** Same
+answer, 8–43x faster, and the margin widens with the group count.
+
+`pymer4` *is* `lme4`, so the gap between those two columns is pure rpy2 bridge
+overhead — and it compounds: 21x at 10,000 rows, **298x at 200,000**, where
+marshalling costs 744 of the 747 seconds. It also still needs R, Rtools and a
+writable R library wherever your code runs.
+[Full tables and caveats →](docs/BENCHMARKS.md)
+
 **Where the win comes from — honestly.** The largest single factor is
 structural, not the language:
 

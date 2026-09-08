@@ -16,6 +16,7 @@ Reproduce with `python bench/scaling.py` and `python bench/stages.py`.
 | CPU | AMD Ryzen 5 5600G, 6 cores / 12 threads, AVX2, no GPU |
 | Python | 3.14.3 |
 | numpy / scipy / statsmodels | 2.5.2 / 1.18.1 / 0.15.0 |
+| R / rpy2 / pymer4 | 4.6.1 / 3.6.7 / 0.9.2 |
 
 ## Scaling in the group count
 
@@ -39,6 +40,73 @@ The last row is the scale from
 where a user reported `mixedlm` taking **41 minutes** on 125,066 groups against
 1–2 seconds for R's `lmer`. It is not run against the reference here because
 that is the point.
+
+## Against lme4 and pymer4
+
+`statsmodels` is the package this replaces, but it is not the strongest thing in
+the market. That is **`lme4`** in R -- the reference implementation, and the
+oracle this package's correctness is checked against -- and **`pymer4`**, which
+is the only way a Python user gets genuine `lme4` results today.
+
+All three fitted the same models on byte-identical CSVs. Reproduce with:
+
+```bash
+python bench/vs_lme4.py --write            # fixtures + mixedlm-rs timings
+Rscript bench/vs_lme4.R bench/fixtures     # lme4, timed inside R
+python -u bench/time_pymer4.py             # pymer4, in its own process
+python bench/vs_lme4.py --report
+```
+
+| fixture | n | groups | mixedlm-rs | lme4 (R) | pymer4 | vs lme4 | vs pymer4 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| sleepstudy-like | 180 | 18 | **0.008 s** | 0.010 s | 0.39 s | 1x | 47x |
+| small | 10,000 | 500 | **0.010 s** | 0.080 s | 1.71 s | 8x | 166x |
+| mid | 20,000 | 1,000 | **0.011 s** | 0.160 s | 3.34 s | 14x | 293x |
+| mid | 40,000 | 5,000 | **0.017 s** | 0.330 s | 11.67 s | 19x | 683x |
+| intercept-only | 40,000 | 5,000 | **0.011 s** | 0.190 s | 6.69 s | 17x | 600x |
+| ML (not REML) | 40,000 | 5,000 | **0.017 s** | 0.320 s | 11.29 s | 19x | 653x |
+| large | 100,000 | 20,000 | **0.038 s** | 1.120 s | 118.10 s | 30x | 3,127x |
+| large | 200,000 | 50,000 | **0.078 s** | 2.510 s | 747.28 s | 32x | **9,554x** |
+| huge | 500,264 | **125,066** | **0.169 s** | 7.330 s | *not run* | **43x** | — |
+
+**The log-likelihood agrees with `lme4` to 0.000000 on all nine fixtures.** Same
+optimum, same model, between 1x and 43x faster -- and the margin grows with the
+group count, which is what you would expect if the win is structural rather than
+a constant factor.
+
+The `sleepstudy` row is close to a tie because at 180 observations neither
+implementation is doing meaningful work; fixed overhead dominates on both sides.
+
+### The rpy2 tax
+
+`pymer4` *is* `lme4` -- it calls it through `rpy2`. So the gap between the two
+columns is pure bridge overhead: marshalling the data frame into R, and the
+fitted object back out.
+
+| n | lme4 | pymer4 | overhead |
+|---:|---:|---:|---:|
+| 10,000 | 0.080 s | 1.71 s | 21x |
+| 40,000 | 0.330 s | 11.67 s | 35x |
+| 100,000 | 1.120 s | 118.10 s | 105x |
+| 200,000 | 2.510 s | 747.28 s | **298x** |
+
+It is not a constant. At 200,000 rows the bridge costs **744 of the 747
+seconds** -- the statistics is 2.5 s of it.
+
+That is the substantive competitive point. `pymer4` is not a slower alternative
+you might accept in order to avoid reimplementing `lme4`; at any real data size
+it is a different order of magnitude, *and* it still needs R, Rtools, rpy2 and a
+writable R library present wherever the code runs.
+
+### Caveats
+
+- The 500,264-row row is `mixedlm-rs` and `lme4` only. `pymer4` was stopped
+  there deliberately; extrapolating the 298x overhead it would have needed
+  roughly 40 minutes.
+- `pymer4` 0.9.2 exposes its fit statistics differently than the benchmark
+  expected, so its `logLik` came back `NaN` and is not compared. The correctness
+  comparison rests on the `lme4` column, which is the same fit.
+- Versions: R 4.6.1, lme4 1.1-x from CRAN, rpy2 3.6.7, pymer4 0.9.2.
 
 ## Where the win actually comes from
 
