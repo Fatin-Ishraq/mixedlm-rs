@@ -4,7 +4,7 @@
 //! iterates back into Python, so a model with 100,000 groups costs one FFI
 //! crossing rather than one per group per iteration.
 
-use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -36,16 +36,26 @@ impl LmmCore {
         n_groups: usize,
     ) -> PyResult<Self> {
         let y = y.as_slice()?;
-        let xv = x.as_array();
-        let zv = z.as_array();
+        let xs = x.as_array();
+        let zs = z.as_array();
         let codes = codes.as_slice()?;
 
         let n = y.len();
-        let p = xv.shape()[1];
-        let q = zv.shape()[1];
+        let p = xs.shape()[1];
+        let q = zs.shape()[1];
         let m = n_groups;
 
-        if xv.shape()[0] != n || zv.shape()[0] != n || codes.len() != n {
+        // Flat row-major slices: the accumulation below is O(n * (p^2 + qp + q^2))
+        // scalar work, and going through bounds-checked 2-D ndarray indexing for
+        // every element of it costs several times the arithmetic.
+        let xv = xs
+            .as_slice()
+            .ok_or_else(|| PyValueError::new_err("X must be C-contiguous"))?;
+        let zv = zs
+            .as_slice()
+            .ok_or_else(|| PyValueError::new_err("Z must be C-contiguous"))?;
+
+        if xs.shape()[0] != n || zs.shape()[0] != n || codes.len() != n {
             return Err(PyValueError::new_err(
                 "y, X, Z and group codes must agree on the row count",
             ));
@@ -72,21 +82,33 @@ impl LmmCore {
             let yr = y[r];
             yty += yr * yr;
 
+            let xrow = &xv[r * p..r * p + p];
+            let zrow = &zv[r * q..r * q + q];
+
             for a in 0..p {
-                let xa = xv[[r, a]];
+                let xa = xrow[a];
                 xty[a] += xa * yr;
+                let dst = &mut xtx[a * p..a * p + p];
                 for b in 0..p {
-                    xtx[a * p + b] += xa * xv[[r, b]];
+                    dst[b] += xa * xrow[b];
                 }
             }
+            let ztz_g = &mut ztz[g * q * q..(g + 1) * q * q];
+            let zty_g = &mut zty[g * q..(g + 1) * q];
             for a in 0..q {
-                let za = zv[[r, a]];
-                zty[g * q + a] += za * yr;
+                let za = zrow[a];
+                zty_g[a] += za * yr;
+                let dst = &mut ztz_g[a * q..a * q + q];
                 for b in 0..q {
-                    ztz[g * q * q + a * q + b] += za * zv[[r, b]];
+                    dst[b] += za * zrow[b];
                 }
+            }
+            let ztx_g = &mut ztx[g * q * p..(g + 1) * q * p];
+            for a in 0..q {
+                let za = zrow[a];
+                let dst = &mut ztx_g[a * p..a * p + p];
                 for b in 0..p {
-                    ztx[g * q * p + a * p + b] += za * xv[[r, b]];
+                    dst[b] += za * xrow[b];
                 }
             }
         }
@@ -264,11 +286,13 @@ impl LmmCore {
             PyArray2::from_vec2(py, &reshape(&cov_beta, p, p))?,
         )?;
         out.set_item("cov_re", PyArray2::from_vec2(py, &reshape(&cov_re, q, q))?)?;
+        // These are m x q, so building them through Vec<Vec<f64>> would allocate
+        // one small Vec per group. Reshaping a flat buffer avoids that entirely.
         out.set_item(
             "random_effects",
-            PyArray2::from_vec2(py, &reshape(&b_all, d.m, q))?,
+            PyArray1::from_vec(py, b_all).reshape([d.m, q])?,
         )?;
-        out.set_item("u", PyArray2::from_vec2(py, &reshape(&e.u, d.m, q))?)?;
+        out.set_item("u", PyArray1::from_vec(py, e.u.clone()).reshape([d.m, q])?)?;
         out.set_item("sigma2", e.sigma2)?;
         out.set_item("sigma", e.sigma2.sqrt())?;
         out.set_item("pwrss", e.pwrss)?;
