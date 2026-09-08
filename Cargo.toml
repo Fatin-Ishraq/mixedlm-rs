@@ -1,0 +1,22 @@
+[package]
+name = "mixedlm-rs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+license = "MIT"
+description = "Fast linear mixed-effects models: profiled REML over a block-diagonal Cholesky"
+
+[lib]
+name = "_mixedlm_rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py310"] }
+rayon = "1.10"
+numpy = "0.23"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
