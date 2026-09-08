@@ -31,7 +31,6 @@ test = ["pytest>=7", "statsmodels>=0.14", "patsy>=0.5"]
 
 [tool.maturin]
 python-source = "python"
-include = ["python/mixedlm_rs/py.typed"]
 module-name = "mixedlm_rs._mixedlm_rs"
 features = ["pyo3/extension-module"]
 
