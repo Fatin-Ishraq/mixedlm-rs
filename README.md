@@ -44,7 +44,7 @@ print(model.fit().summary())
 ```
                     Mixed Linear Model Regression Results
 ==============================================================================
-Model:                MixedLM           Dependent Variable:                  y
+Model:                MixedLM           Dependent Variable:           Reaction
 No. Observations:     180               Method:                           REML
 No. Groups:           18                Scale:                        654.9410
 Min. group size:      10                Log-Likelihood:              -871.8141

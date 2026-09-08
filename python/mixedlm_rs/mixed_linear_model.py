@@ -142,6 +142,7 @@ class MixedLM:
             )
 
         self.exog_names = kwargs.pop("exog_names", None)
+        self._endog_name = kwargs.pop("endog_name", None) or "y"
         self.data_frame = kwargs.pop("_data_frame", None)
         self.formula = kwargs.pop("formula", None)
         self.re_formula = kwargs.pop("re_formula", None)
@@ -236,6 +237,7 @@ class MixedLM:
 
         model = cls(y.iloc[:, 0].to_numpy(float), X.to_numpy(float), groups_arr,
                     exog_re=Zdf.to_numpy(float), missing="none",
+                    endog_name=str(y.columns[0]),
                     exog_names=list(X.columns),
                     exog_re_names=list(Zdf.columns),
                     formula=formula, re_formula=re_formula,
@@ -327,7 +329,7 @@ class MixedLM:
 
     @property
     def endog_names(self):
-        return "y"
+        return self._endog_name
 
     def initialize(self):
         return None
@@ -523,7 +525,7 @@ class MixedLMResults:
             ("Mean group size:", f"{self.nobs / self.model.n_groups:.1f}"),
         ]
         right = [
-            ("Dependent Variable:", yname or "y"),
+            ("Dependent Variable:", yname or self.model.endog_names),
             ("Method:", self.method),
             ("Scale:", f"{self.scale:.4f}"),
             ("Log-Likelihood:", f"{self.llf:.4f}"),
