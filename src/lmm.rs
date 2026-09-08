@@ -409,7 +409,8 @@ pub fn evaluate(d: &LmmData, theta: &[f64], reml: bool, want_grad: bool) -> Opti
 
     let beta_xty: f64 = (0..p).map(|j| beta[j] * d.xty[j]).sum();
     let pwrss = d.yty - beta_xty - sum_uv;
-    if !(pwrss > 0.0) || !pwrss.is_finite() {
+    // NaN is caught by the first clause; see the note in linalg::cholesky.
+    if !pwrss.is_finite() || pwrss <= 0.0 {
         return None;
     }
 

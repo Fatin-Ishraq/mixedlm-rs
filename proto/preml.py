@@ -116,7 +116,7 @@ def profiled_deviance(theta, d: LMMData, reml=True, want_solution=False):
     the whole block-diagonal system is one handful of numpy calls regardless of
     how many groups there are.
     """
-    q, p, n, m = d.q, d.p, d.n, d.m
+    q, p, n = d.q, d.p, d.n
     Lam = theta_to_lambda(theta, q)
     LamT = Lam.T
 

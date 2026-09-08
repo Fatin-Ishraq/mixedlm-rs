@@ -18,7 +18,7 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from ._fit import ConvergenceWarning, fit_core, theta_to_lambda
+from ._fit import ConvergenceWarning, fit_core
 
 __all__ = [
     "MixedLM", "MixedLMResults", "MixedLMParams", "VCSpec",
@@ -302,7 +302,6 @@ class MixedLM:
     # -- likelihood surface (for compatibility and testing) -----------------
     def loglike(self, params, profile_fe=True):
         """Log-likelihood at a packed parameter vector."""
-        from ._fit import fit_core as _fc  # noqa: F401
         theta = self._theta_from_packed(params)
         core = self._core()
         dev = core.deviance(list(theta), True)

@@ -17,7 +17,9 @@ pub fn cholesky(a: &mut [f64], n: usize) -> Option<()> {
             let v = a[j * n + k];
             d -= v * v;
         }
-        if !(d > 0.0) || !d.is_finite() {
+        // NaN is caught by the first clause; ordering matters, since
+        // `NaN <= 0.0` is false and would otherwise slip through.
+        if !d.is_finite() || d <= 0.0 {
             return None;
         }
         let ljj = d.sqrt();

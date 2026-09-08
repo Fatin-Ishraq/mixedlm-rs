@@ -7,3 +7,6 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+
+# generated benchmark fixtures (60MB, rebuilt by bench/vs_lme4.py --write)
+bench/fixtures/

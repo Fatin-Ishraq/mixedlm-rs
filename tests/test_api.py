@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 import mixedlm_rs as mlm
-from mixedlm_rs import MixedLM, MixedLMParams, MixedLMResults, VCSpec
+from mixedlm_rs import MixedLM, MixedLMParams, VCSpec
 
 warnings.filterwarnings("ignore")
 
