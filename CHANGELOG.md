@@ -37,6 +37,11 @@ First release. Linear mixed-effects models with one grouping factor, matching
 - **Variance-component standard errors are computed on first access**, not
   during the fit: the profiled Hessian costs `2 * n_theta` extra gradient
   evaluations and most callers only read the fixed effects.
+- **Starts are chosen per optimiser, and both counts are measured.** scipy's
+  L-BFGS-B takes one -- across the 120 fuzz fixtures, 1, 2 and 3 starts give
+  identical outcomes for 27% more evaluations. The in-crate optimiser takes
+  five, because with one it settles on a strictly worse stationary point on 2
+  of 20 seeds.
 - **Identifiability check.** On designs where it is plausible, the fit probes
   whether the criterion is flat along the variance split and warns if it is.
   `lme4` refuses such models; `statsmodels` fits them silently.
@@ -47,7 +52,7 @@ First release. Linear mixed-effects models with one grouping factor, matching
 - Wheels: one `abi3` wheel per platform covering Python 3.10 through 3.14.
 
 Verified against lme4's published fits for `sleepstudy`, `Dyestuff` and the
-singular `Dyestuff2`, under both REML and ML. 254 Python tests, 7 Rust tests.
+singular `Dyestuff2`, under both REML and ML. 282 Python tests, 7 Rust tests.
 
 Not implemented, and raising rather than ignored: variance components
 (`vc_formula` / `exog_vc`), `fe_pen`, `cov_pen`, `free`, `fit_regularized`,
