@@ -210,15 +210,26 @@ def main() -> int:
         "stress": st,
         "quick": args.quick,
     }
+    out_path = pathlib.Path(args.out)
+
+    # Written *before* the suites run, and rewritten after them.
+    # tests/test_baseline.py reads this file, so running the suites first has
+    # them check the previous run's numbers and then records their failure as
+    # this run's result -- which is what happened the first time.
+    out_path.write_text(json.dumps(payload, indent=1) + "\n", encoding="utf-8")
+
     if not args.skip_suites:
         print("test suites ...", flush=True)
         payload["suites"] = suites()
         for k, v in payload["suites"].items():
             print(f"  {k}: {v['summary']}")
+        out_path.write_text(json.dumps(payload, indent=1) + "\n",
+                            encoding="utf-8")
 
-    pathlib.Path(args.out).write_text(
-        json.dumps(payload, indent=1) + "\n", encoding="utf-8")
     print(f"\nwrote {args.out}")
+    if payload.get("suites", {}).get("pytest", {}).get("returncode", 0) != 0:
+        print("the recorded pytest run FAILED; this baseline is not usable")
+        return 1
     return 0
 
 
