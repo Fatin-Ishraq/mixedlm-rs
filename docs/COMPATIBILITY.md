@@ -55,13 +55,13 @@ Code that reads values works. Code that relies on the *container* does not.
 | what | statsmodels | here | why |
 |---|---|---|---|
 | `fe_params`, `params`, `bse`, `bse_fe`, `bse_re`, `tvalues`, `pvalues`, `fittedvalues`, `resid` | `pandas.Series` | `numpy.ndarray` | Name-based access (`result.fe_params["x"]`) raises. Use `fe_params_labelled`, `params_labelled`, or `param_names`. |
-| `cov_re`, `cov_re_unscaled` | `pandas.DataFrame` | `numpy.ndarray` | `cov_re.loc["Group", "Group"]` raises; `cov_re[0, 0]` works on both. |
+| `cov_re`, `cov_re_unscaled` | `pandas.DataFrame` | `numpy.ndarray` | `cov_re.loc["Group", "Group"]` raises here. `cov_re[0, 0]` raises on *statsmodels* -- `[0, 0]` is column selection on a DataFrame, not element access -- so it is not a portable form either. `np.asarray(cov_re)[0, 0]` works on both. |
 | `llf`, `scale` | `numpy.float64` | `float` | Equal numerically; `isinstance(x, np.float64)` is False. |
 | `df_resid` | `numpy.int64` | `int` | Same. |
 | `summary()` | `Summary` with `.tables`, `.as_html()`, `.as_latex()` | text-only object with `.as_text()` | `str()` and `print()` are identical in shape. |
 | `t_test`, `wald_test`, `f_test` | `ContrastResults` | minimal object with `effect`, `sd`, `statistic`, `pvalue`, `df_denom`, `df_num` | Fixed effects only; the variance parameters sit on a bounded space where Wald statistics are not chi-square. |
 | `score(params)`, `hessian(params)` | packed covariance parameters | **internal `theta` coordinates** — the entries of the relative covariance factor | Not comparable term by term. `hessian` is `(k_re2, k_re2)`, not the reference's full square. |
-| `cov_params()` | full covariance of the packed vector | fixed-effect block exact; variance-component rows carry delta-method variances on the diagonal and `NaN` off-diagonal | No cross-block terms; see below. |
+| `cov_params()` | full covariance of the packed vector | fixed-effect block is the exact conditional GLS covariance `scale * (X'V^-1 X)^-1` **at the estimated covariance parameters** -- it does not account for their estimation, exactly as statsmodels' does not; variance-component rows carry delta-method variances on the diagonal and `NaN` off-diagonal | No cross-block terms; see below. |
 | `loglike(params)` | accepts its packing | also accepts a covariance-only vector and `MixedLMParams` | `profile_fe=False` raises: this criterion has no un-profiled surface. |
 | `group_list` | method splitting an array | same | It was a property returning labels here until 0.1.0; that was a bug. |
 

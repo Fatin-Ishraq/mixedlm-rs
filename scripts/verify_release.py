@@ -91,11 +91,29 @@ def inspect_wheel(wheel: pathlib.Path, version: str) -> None:
         text = z.read(meta).decode("utf-8") if meta else ""
         licences = [n for n in names if ".dist-info/licenses/" in n
                     or n.endswith(".dist-info/LICENSE")]
+        notices = next((n for n in names
+                        if n.endswith("THIRD-PARTY-LICENSES.md")), None)
+        notice_text = z.read(notices).decode("utf-8") if notices else ""
 
     check("wheel filename carries the version", version in wheel.name, wheel.name)
     check("METADATA present", bool(meta))
     check("METADATA version matches", f"Version: {version}" in text)
     check("licence file included", bool(licences), str(licences))
+    # "some licence file exists" is satisfied by our own MIT LICENSE alone,
+    # which is exactly the state that shipped a wheel missing every upstream
+    # notice. The extension statically links BSD-2-Clause and MIT crates, and
+    # both require their copyright, conditions and disclaimer to accompany a
+    # binary redistribution -- so check for the texts, by content.
+    check("upstream licence texts included", bool(notices), str(notices))
+    check("upstream notices carry the BSD-2-Clause disclaimer",
+          "Redistribution and use in source and binary forms" in notice_text
+          and "THE SOFTWARE IS PROVIDED" in notice_text.upper())
+    check("upstream notices carry a copyright line",
+          notice_text.count("Copyright") >= 5,
+          f"{notice_text.count('Copyright')} copyright notices")
+    for crate in ("numpy", "pyo3", "rayon", "ndarray"):
+        check(f"notice text present for linked crate `{crate}`",
+              f"## {crate} " in notice_text)
     check("py.typed included",
           any(n.endswith("mixedlm_rs/py.typed") for n in names))
     check("native stub included",

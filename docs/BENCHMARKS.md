@@ -101,26 +101,35 @@ a constant factor.
 The `sleepstudy` row is close to a tie because at 180 observations neither
 implementation is doing meaningful work; fixed overhead dominates on both sides.
 
-### The rpy2 tax
+### What calling lme4 from Python costs
 
-`pymer4` *is* `lme4` -- it calls it through `rpy2`. So the gap between the two
-columns is pure bridge overhead: marshalling the data frame into R, and the
-fitted object back out.
+`pymer4` *is* `lme4` -- it calls it through `rpy2`. The gap between the two
+columns is what a Python caller pays on top of the fit itself.
 
-| n | lme4 | pymer4 | overhead |
+| n | lme4 | pymer4 | ratio |
 |---:|---:|---:|---:|
 | 10,000 | 0.080 s | 1.71 s | 21x |
 | 40,000 | 0.330 s | 11.67 s | 35x |
 | 100,000 | 1.120 s | 118.10 s | 105x |
 | 200,000 | 2.510 s | 747.28 s | **298x** |
 
-It is not a constant. At 200,000 rows the bridge costs **744 of the 747
-seconds** -- the statistics is 2.5 s of it.
+It is not a constant. At 200,000 rows, 2.51 s of the 747.28 s is the `lmer` fit
+and the other 744.77 s is everything `pymer4` does around it.
 
-That is the substantive competitive point. `pymer4` is not a slower alternative
-you might accept in order to avoid reimplementing `lme4`; at any real data size
-it is a different order of magnitude, *and* it still needs R, Rtools, rpy2 and a
-writable R library present wherever the code runs.
+**That 744.77 s is not a measurement of marshalling.** An earlier revision of
+this file called it "pure bridge overhead", and that was wrong -- it attributed
+to serialisation a number that was never decomposed. `pymer4.models.lmer.fit`
+also routes through `lmerTest` for Satterthwaite degrees of freedom, and pulls
+fixed effects, random effects and fit statistics back as R objects. The 744.77 s
+covers marshalling *and* that additional inference and extraction, and nothing
+in `bench/time_pymer4.py` separates them; doing so would need a profiler
+decomposition that has not been run. The benchmark script has always said this,
+and the claim here now matches it.
+
+The competitive point does not depend on the split. `pymer4` is not a slower
+alternative you might accept in order to avoid reimplementing `lme4`; at any
+real data size it is a different order of magnitude end to end, *and* it still
+needs R, Rtools, rpy2 and a writable R library present wherever the code runs.
 
 ### Caveats
 

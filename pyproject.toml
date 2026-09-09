@@ -9,6 +9,14 @@ description = "Fast linear mixed-effects models for Python - lme4 speed, statsmo
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
+# The compiled extension statically links MIT / BSD-2-Clause /
+# Apache-2.0 crates, and all three require their notice text to travel
+# with a *binary* redistribution -- which a wheel containing the linked
+# extension is. Listing SPDX identifiers in the SBOM does not satisfy
+# that; the texts themselves have to ship, so both notice files go into
+# dist-info/licenses/ alongside our own LICENSE.
+license-files = ["LICENSE", "THIRD-PARTY-NOTICES.md",
+                 "THIRD-PARTY-LICENSES.md"]
 authors = [{ name = "Fatin Ishraq" }]
 keywords = [
     "lmer", "lme4", "mixed-effects", "mixed models", "multilevel",
@@ -34,7 +42,13 @@ classifiers = [
 # patsy is required, not optional: the documented first example -- and the
 # `mixedlm(...)` entry point that mirrors statsmodels' formula API -- needs it,
 # so a clean install of the base package has to be able to run it.
-dependencies = ["numpy>=1.23", "scipy>=1.9", "pandas>=1.5", "patsy>=0.5"]
+# Floors verified by execution, not by reading changelogs: the full test
+# suite runs green against exactly these versions on Python 3.10, and the CI
+# "declared floors" job pins the same set. patsy is 0.5.3 rather than 0.5
+# because 0.5.0 and 0.5.1 do `from collections import Mapping`, removed in
+# Python 3.10, and 0.5.2 fails its own version check -- all three raise on
+# import under every Python this package supports.
+dependencies = ["numpy>=1.23", "scipy>=1.9", "pandas>=1.5", "patsy>=0.5.3"]
 
 [project.optional-dependencies]
 # Kept as an empty extra so `pip install mixedlm-rs[formula]` keeps working for
@@ -117,5 +131,9 @@ ignore = [
 # line. That is the point of it as a reference, so those rules are off.
 "proto/*" = ["E402", "E741", "E702", "RUF034"]
 "tests/*" = ["E402"]
+# The stage-13 regression tests quote the documents they check, including
+# the en dashes in "44-64"; and two cases bind a lambda to a name purely so
+# patsy can resolve it from the formula, which is the thing under test.
+"tests/test_stage13_regressions.py" = ["E402", "RUF001", "F841"]
 # The review-findings checker quotes documentation verbatim, en dashes and all.
 "scripts/verify_review_findings.py" = ["RUF001"]

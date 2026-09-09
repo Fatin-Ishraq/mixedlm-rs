@@ -153,14 +153,29 @@ Unknown keyword arguments to `MixedLM(...)` and `fit(...)` raise `TypeError`.
   entries of the relative covariance factor — not statsmodels' packed covariance
   parameters, and `hessian` is `(k_re2, k_re2)`, not the reference's full square.
   They are not term-by-term comparable with the reference's.
-- **Pickling preserves formula prediction, by keeping the training frame.**
-  patsy declines to pickle a `DesignInfo` (pydata/patsy#26), so it is rebuilt
-  on the other side from the frame the model was fitted on — which is what
-  reproduces the state its transforms learned (`C()` levels, `center()` means)
-  rather than recomputing it against new data. The cost is that the pickle
-  carries that frame. `save(path, with_data=False)` drops it for a smaller
-  file; `predict` on raw new data then raises an error saying exactly that,
-  and prediction from a pre-built design matrix still works.
+- **Pickling preserves formula prediction for formulas built from patsy's own
+  transforms and from module-level functions.** patsy declines to pickle a
+  `DesignInfo` (pydata/patsy#26), so it is rebuilt on the other side by
+  re-running the formula against **the exact rows the model was fitted on** —
+  which is what reproduces the state its transforms learned (`C()` levels,
+  `center()` means, spline knots) rather than recomputing it against new data.
+  Rebuilding against the retained frame *before* missing-row filtering was a
+  bug: with missing values in a random-effect predictor it relearned different
+  state and shifted every prediction silently. The rebuilt design is now
+  checked against the fitted one — column count, column names, row count — and
+  discarded if it disagrees, rather than used.
+
+  What does **not** survive: a formula referring to a lambda, a closure, or any
+  other object that cannot be pickled. Names the formula mentions are captured
+  at fit time and carried along when they pickle — a module-level `def` does,
+  by qualified name — and a name that does not is recorded by name, so
+  `predict` afterwards says which transform is missing instead of blaming the
+  training data. There is no universal formula round-trip guarantee.
+
+  The cost of all this is that the pickle carries the training frame.
+  `save(path, with_data=False)` drops it for a smaller file; `predict` on raw
+  new data then raises an error saying exactly that, and prediction from a
+  pre-built design matrix still works.
 
 ## Behavioural differences
 

@@ -29,8 +29,16 @@ for it.
 pip install mixedlm-rs
 ```
 
-Wheels are `abi3`, one per platform, covering Python 3.10–3.14 on Linux, macOS
-and Windows. There is nothing to compile unless you want to.
+The build is `abi3`, so one wheel per platform covers Python 3.10–3.14 and
+there is nothing to compile unless you want to.
+
+**Currently verified:** the Windows x86-64 wheel and the sdist, both built and
+installed into clean environments outside the source tree
+(`python scripts/verify_release.py`). The Linux and macOS wheels are produced by
+the same `maturin` configuration and their CI jobs are written, but those jobs
+have not run yet — this project has no remote. Until they do, treat non-Windows
+wheels as expected to work rather than as tested, and build from source
+(`pip install mixedlm-rs --no-binary mixedlm-rs`) if you need certainty.
 
 ```python
 import pandas as pd
@@ -79,7 +87,11 @@ For most code, changing the import is the whole migration.
 + from mixedlm_rs import MixedLM
 ```
 
-Same classes, same arguments, same `params` packing, same `summary()` layout.
+Same classes, same `params` packing, same `summary()` layout. The
+arguments match too, with the exceptions catalogued in
+[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md): a few statsmodels
+arguments are accepted and warned about rather than honoured, and some
+attributes are plain arrays where statsmodels returns a DataFrame.
 
 **Three things decide whether that holds for you**, and it is worth two minutes
 to check rather than finding out later:
@@ -198,10 +210,13 @@ byte-identical data:
 **The log-likelihood matches `lme4` to six decimals on every fixture.** Same
 answer, 8–43x faster, and the margin widens with the group count.
 
-`pymer4` *is* `lme4`, so the gap between those two columns is pure rpy2 bridge
-overhead — and it compounds: 21x at 10,000 rows, **298x at 200,000**, where
-marshalling costs 744 of the 747 seconds. It also still needs R, Rtools and a
-writable R library wherever your code runs.
+`pymer4` *is* `lme4`, so the gap between those two columns is what a Python
+caller pays on top of the fit — and it compounds: 21x at 10,000 rows, **298x at
+200,000**, where 2.51 s of the 747.28 s is the `lmer` fit. The remaining 744.77 s
+is *not* a measurement of marshalling alone: `pymer4` also runs lmerTest for
+Satterthwaite degrees of freedom and extracts the results as R objects, and the
+benchmark does not separate those from serialisation. It also still needs R,
+Rtools and a writable R library wherever your code runs.
 [Full tables and caveats →](docs/BENCHMARKS.md)
 
 **Where the win comes from — honestly.** The largest single factor is
@@ -234,14 +249,14 @@ about 200 lines. [Full tables →](docs/BENCHMARKS.md)
 `lme4` and `MixedModels.jl` both optimise the covariance parameters
 **derivative-free** (BOBYQA). Here the analytic gradient of the profiled REML
 criterion is evaluated alongside the criterion itself and handed to L-BFGS-B,
-which cuts objective evaluations from 44–80 to 11–16 on the benchmark
+which cuts objective evaluations from 44–64 to 11–13 on the benchmark
 fixtures.
 
 Two caveats worth stating plainly. The gradient of the profiled criterion is
 not new — Bates et al. derive the ML version in the lme4 paper (eq. 46–48), and
 `MixedModels.jl` documents derivative support; what is here is a REML gradient
 specialised to the block structure, computed in the passes that already produce
-the criterion. And the 44–80 figure is *this* package's own finite-difference
+the criterion. And the 44–64 figure is *this* package's own finite-difference
 stage, not BOBYQA: no claim is made about lme4's evaluation count, which was
 not measured.
 

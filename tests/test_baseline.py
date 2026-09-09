@@ -17,6 +17,7 @@ not in the baseline cannot be quoted at all.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import re
 
@@ -59,8 +60,37 @@ def test_the_baseline_was_recorded_on_a_clean_tree(baseline):
         "`python bench/baseline.py` on a clean tree.")
 
 
+# Files whose contents can change a fitted number. Deliberately not "any file
+# the diff touches": the gate fired on a Ruff configuration edit, which cannot
+# move a deviance by any mechanism, and a gate that cries wolf gets silenced by
+# re-recording rather than by thinking. pyproject.toml is included only through
+# the sections that reach the build -- dependencies, build-system, tool.maturin
+# -- not tool.ruff or tool.mypy.
+# bench/ is included because the generators decide which cases are run: a
+# change to differential.py or stress_sweep.py changes the numbers without
+# touching a line of the package.
+NUMERIC_PATHS = ("src", "python", "Cargo.toml", "Cargo.lock", "bench")
+BUILD_SECTIONS = ("[project]", "[build-system]", "[tool.maturin]")
+
+
+def _pyproject_build_sections(text):
+    """The build-relevant part of a pyproject, as a string.
+
+    Comparing this across two commits answers "could the built artifact have
+    changed?" without answering "did any byte of the file change?".
+    """
+    out, keep = [], False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            keep = any(stripped.startswith(sec[:-1]) for sec in BUILD_SECTIONS)
+        if keep and stripped and not stripped.startswith("#"):
+            out.append(stripped)
+    return "\n".join(out)
+
+
 def test_no_code_has_changed_since_the_baseline_was_recorded(baseline):
-    """Doc edits after a baseline are fine. Code edits invalidate it.
+    """Doc and lint-config edits after a baseline are fine. Code edits are not.
 
     The clean-tree check above only says the tree was clean *at record time*.
     It says nothing about what happened afterwards, and a numerical baseline
@@ -75,21 +105,78 @@ def test_no_code_has_changed_since_the_baseline_was_recorded(baseline):
     probe = subprocess.run(["git", "cat-file", "-e", commit + "^{commit}"],
                            cwd=ROOT, capture_output=True, text=True)
     if probe.returncode != 0:
+        # A shallow clone -- GitHub's default checkout depth is 1 -- does not
+        # contain the recorded commit, and skipping there turns this gate off
+        # in exactly the environment it is meant to guard. CI sets
+        # fetch-depth: 0; if the history is missing there, that is a
+        # configuration failure and has to be loud.
+        if os.environ.get("CI"):
+            pytest.fail(
+                f"the baseline commit {commit[:10]} is not in this "
+                "repository, so freshness cannot be checked. CI must check "
+                "out full history (`fetch-depth: 0`).")
         pytest.skip("the recorded commit is not in this repository")
 
+    # `commit..HEAD` misses uncommitted edits, which is the state a developer
+    # is actually in when they run the suite. Diffing the working tree against
+    # the recorded commit covers both.
     diff = subprocess.run(
-        ["git", "diff", "--name-only", commit, "HEAD", "--",
-         "src", "python", "Cargo.toml", "Cargo.lock", "pyproject.toml"],
+        ["git", "diff", "--name-only", commit, "--", *NUMERIC_PATHS],
         cwd=ROOT, capture_output=True, text=True)
     if diff.returncode != 0:
         pytest.skip("git diff unavailable")
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard", "--",
+         *NUMERIC_PATHS],
+        cwd=ROOT, capture_output=True, text=True)
+    # The baseline file itself is the output, not an input to it.
+    ignore = {"bench/baseline.json"}
+    changed = [f for f in diff.stdout.split() if f.strip() and f not in ignore]
+    changed += [f + " (untracked)" for f in untracked.stdout.split()
+                if f.strip() and f not in ignore]
 
-    changed = [f for f in diff.stdout.split() if f.strip()]
+    was = subprocess.run(["git", "show", f"{commit}:pyproject.toml"],
+                         cwd=ROOT, capture_output=True, text=True)
+    if was.returncode == 0:
+        now = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        if _pyproject_build_sections(was.stdout) != _pyproject_build_sections(now):
+            changed.append("pyproject.toml (build sections)")
+
     assert not changed, (
         "code has changed since bench/baseline.json was recorded at "
         f"{commit[:10]}, so its numbers may no longer describe this tree: "
         + ", ".join(changed)
         + ". Re-run `python bench/baseline.py`.")
+
+
+def test_the_baseline_names_the_binary_that_produced_it(baseline):
+    """A version string does not identify a build.
+
+    The Python sources ship inside the wheel, so a checkout and an installed
+    wheel report the same ``__version__`` while containing different code. The
+    baseline records the extension's path and content hash so the numbers can
+    be traced to an actual artifact.
+    """
+    env = baseline["environment"]
+    if "extension_sha256" not in env:
+        pytest.skip("baseline predates binary identification; re-record")
+    assert env["extension_sha256"], (
+        "the baseline does not identify the compiled extension it ran "
+        "against. Re-run `python bench/baseline.py`.")
+    assert env["extension_bytes"], "extension size not recorded"
+
+
+def test_every_recorded_suite_passed(baseline):
+    """A baseline is only a gate if the run it records was green.
+
+    The recorder used to check pytest's exit code alone, so a failing
+    ``cargo test --lib`` was written into the file and reported as a success.
+    """
+    for name, run in baseline.get("suites", {}).items():
+        assert run.get("returncode", 0) == 0, (
+            f"bench/baseline.json records a failing {name} run "
+            f"({run.get('summary')!r}); it is a record of a broken build, not "
+            "a baseline. Fix the failure and re-record.")
 
 
 def test_the_baseline_is_a_full_run(baseline):
@@ -128,24 +215,55 @@ def _differential_table_rows(text):
 
 @pytest.mark.parametrize("name", sorted(DOCS))
 def test_documented_differential_counts_match_the_baseline(name, baseline):
-    """Every outcome count quoted anywhere must be one the baseline records.
+    """Every outcome count quoted anywhere must be the one recorded *for that
+    outcome*.
 
     Deliberately permissive about *which* table a number is in -- the stress
-    sweep and the differential comparison share row labels -- but strict that
-    it has to come from a recorded run. A number matching neither is stale.
+    sweep and the differential comparison share row labels, and a document may
+    legitimately quote either. Strict that the number has to be the recorded
+    value for the label it is written against: checking membership in the set
+    of all recorded counts, as this once did, accepts a table with "better"
+    and "same optimum" swapped, which is a wrong table made of right numbers.
     """
     text = DOCS[name].read_text(encoding="utf-8")
-    allowed = set(baseline["differential"]["counts"].values())
-    allowed |= set(baseline["stress"]["counts"].values())
+    differential = baseline["differential"]["counts"]
+    stress = baseline["stress"]["counts"]
     rows = _differential_table_rows(text)
 
     for key, values in rows.items():
+        allowed = {c[key] for c in (differential, stress) if key in c}
+        if not allowed:
+            continue
         for value in values:
             assert value in allowed, (
-                f"{name} quotes {value} for '{key}', which appears in neither "
-                "the recorded differential nor the recorded stress counts "
-                f"({sorted(allowed)}). Re-run `python bench/baseline.py` and "
-                "update the document.")
+                f"{name} quotes {value} for '{key}', but the recorded runs "
+                f"give {sorted(allowed)} for that outcome "
+                f"(differential {differential.get(key)}, "
+                f"stress {stress.get(key)}). A number recorded for a "
+                "*different* outcome is not a defence. Re-run "
+                "`python bench/baseline.py` and update the document.")
+
+
+@pytest.mark.parametrize("name", sorted(DOCS))
+def test_documented_outcome_tables_are_complete(name, baseline):
+    """A table that simply omits a row cannot be caught by checking the rows
+    that are present.
+
+    Dropping "we found a worse optimum" from a table makes the results look
+    unambiguous while every number left behind is correct, so per-row value
+    checking passes. Any table that reports outcomes has to report all four.
+    """
+    text = DOCS[name].read_text(encoding="utf-8")
+    rows = _differential_table_rows(text)
+    if not rows:
+        pytest.skip(f"{name} quotes no outcome table")
+    required = {"reference did not converge", "we found a better optimum",
+                "same optimum", "we found a worse optimum"}
+    missing = sorted(required - set(rows))
+    assert not missing, (
+        f"{name} has an outcome table that omits {missing}. A partial table "
+        "reads as a complete one; every outcome the baseline records has to "
+        "appear.")
 
 
 def test_no_document_quotes_the_old_numbers(baseline):

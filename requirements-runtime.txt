@@ -5,4 +5,4 @@
 numpy>=1.23
 scipy>=1.9
 pandas>=1.5
-patsy>=0.5
+patsy>=0.5.3

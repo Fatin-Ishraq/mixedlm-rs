@@ -25,10 +25,12 @@ from __future__ import annotations
 import json
 import pathlib
 import pickle
+import shutil
 import subprocess
 import sys
 import textwrap
 import warnings
+import zipfile
 
 import numpy as np
 import pandas as pd
@@ -45,6 +47,76 @@ sys.path.insert(0, str(ROOT / "tests"))
 import mixedlm_rs as mlm  # noqa: E402
 import statsmodels.formula.api as smf  # noqa: E402
 from mixedlm_rs import ExperimentalWarning  # noqa: E402
+
+# Document checks read through this rather than touching the filesystem
+# directly, so a negative control can hand one a mutated copy of a file and
+# prove the check actually fails when the claim is missing. A check that
+# passes against a file with the claim deleted is not checking anything.
+_OVERRIDE: dict[str, str] = {}
+
+
+def read(path) -> str:
+    key = str(pathlib.Path(path).resolve())
+    if key in _OVERRIDE:
+        return _OVERRIDE[key]
+    return pathlib.Path(path).read_text(encoding="utf-8")
+
+
+class without:
+    """Temporarily remove a phrase from a file, as seen by :func:`read`."""
+
+    def __init__(self, path, phrase, replacement=""):
+        self.path = pathlib.Path(path).resolve()
+        self.phrase = phrase
+        self.replacement = replacement
+
+    def __enter__(self):
+        original = self.path.read_text(encoding="utf-8")
+        if self.phrase not in original:
+            raise AssertionError(
+                f"negative control is stale: {self.path.name} does not "
+                f"contain {self.phrase!r}")
+        _OVERRIDE[str(self.path)] = original.replace(
+            self.phrase, self.replacement)
+        return self
+
+    def __exit__(self, *exc):
+        _OVERRIDE.pop(str(self.path), None)
+        return False
+
+
+def _module(name: str) -> bool:
+    import importlib.util
+    return importlib.util.find_spec(name) is not None
+
+
+def require_prerequisites() -> None:
+    """Refuse to run without what the checks need, and say what is missing.
+
+    Two checks reach outside the interpreter: one inspects a built sdist, one
+    shells out to ``cargo audit``. A CI job that has neither is not running a
+    weaker version of this script -- it is running a script that cannot make
+    the claim in its own summary line. Failing here names the missing step
+    instead of surfacing as "no sdist built" or a bare FileNotFoundError from
+    deep inside a check.
+    """
+    missing = []
+    if shutil.which("maturin") is None and not _module("maturin"):
+        missing.append(
+            "maturin is not available -- run `pip install maturin` "
+            "(finding 37 builds an sdist from this tree and inspects it)")
+    if shutil.which("cargo") is None:
+        missing.append("cargo is not on PATH (finding R1 runs `cargo audit`)")
+    elif subprocess.run(["cargo", "audit", "--version"],
+                        capture_output=True).returncode != 0:
+        missing.append(
+            "cargo-audit is not installed -- run "
+            "`cargo install cargo-audit --locked` (finding R1 runs it)")
+    if missing:
+        raise SystemExit(
+            "cannot verify the findings; prerequisites missing:\n  - "
+            + "\n  - ".join(missing))
+
 
 RESULTS: list[tuple[str, str, bool, str]] = []
 
@@ -206,7 +278,7 @@ def f12():
 def f13():
     b = json.loads((ROOT / "bench" / "baseline.json").read_text())
     losses = b["stress"]["losses"]
-    txt = (ROOT / "docs" / "CORRECTNESS.md").read_text(encoding="utf-8")
+    txt = read(ROOT / "docs" / "CORRECTNESS.md")
     listed = all(f"{lo['deviance_worse_by']:.3e}"[:3] in txt or
                  f"{lo['deviance_worse_by']:.4e}"[:4] in txt for lo in losses)
     return (ROOT / "bench" / "stress_sweep.py").exists() and listed, \
@@ -348,33 +420,57 @@ def f27():
 
 
 def f28():
-    t = (ROOT / "docs" / "DESIGN.md").read_text(encoding="utf-8")
+    t = read(ROOT / "docs" / "DESIGN.md")
     return "Both claims are false" in t and "profiled over both the scale" in t, \
         "DESIGN.md corrected against statsmodels' own docstring"
 
 
 def f29():
-    t = (ROOT / "bench" / "stages.py").read_text(encoding="utf-8")
-    b = (ROOT / "docs" / "BENCHMARKS.md").read_text(encoding="utf-8")
+    t = read(ROOT / "bench" / "stages.py")
+    b = read(ROOT / "docs" / "BENCHMARKS.md")
     return ("core = LmmCore(y, X, Z, codes, m)" in t and "S6" in t
             and "182.5x" in b and "1844x" in b), \
         "core built inside timed region; S6 like-for-like; old 1844x disclosed"
 
 
 def f30():
-    t = (ROOT / "bench" / "time_pymer4.py").read_text(encoding="utf-8")
-    return "NOT a measurement of serialisation alone" in t and "lmerTest" in t, \
-        "pymer4 overhead no longer called pure bridge"
+    """The *published* attribution, not only the script's own comment.
+
+    This check used to read `bench/time_pymer4.py` alone and report the
+    finding closed, while README.md and docs/BENCHMARKS.md both still called
+    the pymer4 gap pure bridge overhead. Correcting a comment in the benchmark
+    does not correct the claim a reader sees.
+    """
+    t = read(ROOT / "bench" / "time_pymer4.py")
+    script_ok = ("NOT a measurement of serialisation alone" in t
+                 and "lmerTest" in t)
+    published = []
+    for name in ("README.md", "docs/BENCHMARKS.md"):
+        text = read(ROOT / name)
+        for line in text.splitlines():
+            low = line.lower()
+            if ("pure bridge overhead" in low or "pure rpy2 bridge" in low
+                    or "the bridge costs" in low):
+                # Allowed only where the document withdraws the claim.
+                if "was wrong" not in low and "called it" not in low:
+                    published.append(f"{name}: {line.strip()[:50]}")
+        if "744" in text and not ("lmerTest" in text
+                                  and "Satterthwaite" in text):
+            published.append(f"{name}: 744 s quoted without its inclusions")
+    return script_ok and not published, \
+        ("script and both documents attribute the gap to the measured "
+         "end-to-end path" if script_ok and not published
+         else "; ".join(published) or "benchmark script comment missing")
 
 
 def f31():
-    s = (ROOT / "bench" / "scaling.py").read_text(encoding="utf-8")
+    s = read(ROOT / "bench" / "scaling.py")
     return "raise SystemExit" in s and "MAX_FE_SE" in s, \
         "scaling aborts rather than printing an unchecked timing"
 
 
 def f32():
-    b = (ROOT / "docs" / "BENCHMARKS.md").read_text(encoding="utf-8")
+    b = read(ROOT / "docs" / "BENCHMARKS.md")
     # Strip bold markers and normalise en dashes: the claim is in the prose,
     # not in its typography, and matching the typography is how three of these
     # checks failed on a repository that was already correct.
@@ -385,14 +481,14 @@ def f32():
 
 
 def f33():
-    t = (ROOT / "tests" / "test_fuzz.py").read_text(encoding="utf-8")
+    t = read(ROOT / "tests" / "test_fuzz.py")
     return "assert_local_optimum" in t and "finite-difference" in t, \
         "non-convergence branch certified independently"
 
 
 def f34():
-    g = (ROOT / "tests" / "test_gradient.py").read_text(encoding="utf-8")
-    f = (ROOT / "tests" / "test_fuzz.py").read_text(encoding="utf-8")
+    g = read(ROOT / "tests" / "test_gradient.py")
+    f = read(ROOT / "tests" / "test_fuzz.py")
     # The only surviving "or True" is a comment recording what was removed;
     # what matters is that no *executable* assertion still carries it.
     live = [ln for ln in f.splitlines()
@@ -403,16 +499,16 @@ def f34():
 
 
 def f35():
-    v = (ROOT / "bench" / "vs_lme4.py").read_text(encoding="utf-8")
-    t = (ROOT / "bench" / "time_pymer4.py").read_text(encoding="utf-8")
-    b = (ROOT / "docs" / "BENCHMARKS.md").read_text(encoding="utf-8")
+    v = read(ROOT / "bench" / "vs_lme4.py")
+    t = read(ROOT / "bench" / "time_pymer4.py")
+    b = read(ROOT / "docs" / "BENCHMARKS.md")
     return ("pymer4_results.csv" in v and "if rep:" in t and "2.0.6" in b
             and "C:/Users/Fatin" not in v), \
         "report reads stored csv; warm-up excluded; lme4 2.0.6; no machine paths"
 
 
 def f36():
-    r = (ROOT / "README.md").read_text(encoding="utf-8")
+    r = read(ROOT / "README.md")
     return ("not a measurement made here" in r
             and "not a reproduction of their" in r
             and "should not be read as a measured" in r), \
@@ -420,19 +516,41 @@ def f36():
 
 
 def f37():
-    import glob
+    """The sdist ships no GPL-2 fixtures -- checked against *this* tree.
+
+    Picking the newest `dist/*.tar.gz` and reading it proves nothing about
+    the current checkout: a stale archive from an earlier commit satisfies it
+    just as well. The archive is therefore built here, into a scratch
+    directory, and its contents are compared against the working tree.
+    """
     import tarfile
-    paths = sorted(glob.glob(str(ROOT / "dist" / "*.tar.gz")))
-    if not paths:
-        return False, "no sdist built"
-    with tarfile.open(paths[-1]) as t:
-        names = t.getnames()
-    return not any("/data/" in n for n in names), \
-        f"sdist has {len(names)} entries, no data/"
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        built = subprocess.run(
+            [sys.executable, "-m", "maturin", "sdist", "--out", tmp],
+            cwd=ROOT, capture_output=True, text=True,
+            encoding="utf-8", errors="replace")
+        paths = sorted(pathlib.Path(tmp).glob("*.tar.gz"))
+        if built.returncode != 0 or not paths:
+            return False, f"could not build an sdist: {built.stderr[-70:]}"
+        with tarfile.open(paths[-1]) as t:
+            names = t.getnames()
+
+    leaked = [n for n in names if "/data/" in n or n.endswith("/data")]
+    # Source identity: the archive has to contain this tree's own sources.
+    version = tomllib.loads(read(ROOT / "pyproject.toml"))["project"]["version"]
+    expected = f"mixedlm_rs-{version}/python/mixedlm_rs/mixed_linear_model.py"
+    current = any(n.endswith("python/mixedlm_rs/mixed_linear_model.py")
+                  for n in names)
+    return (not leaked and current), \
+        (f"freshly built sdist: {len(names)} entries, no data/"
+         if not leaked and current
+         else f"leaked {leaked[:3]} / missing {expected}")
 
 
 def f38():
-    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    ci = read(ROOT / ".github" / "workflows" / "ci.yml")
     needed = ["3.10", "3.11", "3.12", "3.13", "3.14", "msrv", "audit",
               "artifacts", "mypy", "ruff"]
     missing = [n for n in needed if n not in ci]
@@ -440,14 +558,14 @@ def f38():
 
 
 def f39():
-    d = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    return "patsy>=0.5" in d["project"]["dependencies"], \
+    d = tomllib.loads(read(ROOT / "pyproject.toml"))
+    return "patsy>=0.5.3" in d["project"]["dependencies"], \
         "patsy is a runtime dependency, not an extra"
 
 
 # ================================================== RECHECK.md, findings 1-8
 def r1():
-    lock = (ROOT / "Cargo.lock").read_text(encoding="utf-8")
+    lock = read(ROOT / "Cargo.lock")
     audit = subprocess.run(["cargo", "audit"], cwd=ROOT, capture_output=True,
                            text=True)
     return ('name = "pyo3"' in lock and "0.29" in lock.split('name = "pyo3"')[1][:80]
@@ -479,15 +597,15 @@ def r4():
         warnings.simplefilter("always")
         mlm.mixedlm("y ~ x", DF, groups=DF["g"]).fit(method="rust")
     exp = any(issubclass(x.category, ExperimentalWarning) for x in w)
-    lim = (ROOT / "docs" / "LIMITATIONS.md").read_text(encoding="utf-8")
+    lim = read(ROOT / "docs" / "LIMITATIONS.md")
     return exp and "experimental" in lim and "returns the bad estimate" in lim, \
         "ExperimentalWarning raised; behaviour documented"
 
 
 def r5():
     b = json.loads((ROOT / "bench" / "baseline.json").read_text())
-    bm = (ROOT / "docs" / "BENCHMARKS.md").read_text(encoding="utf-8")
-    lim = (ROOT / "docs" / "LIMITATIONS.md").read_text(encoding="utf-8")
+    bm = read(ROOT / "docs" / "BENCHMARKS.md")
+    lim = read(ROOT / "docs" / "LIMITATIONS.md")
     wins = b["differential"]["counts"]["we found a better optimum"]
     consistent = f"| {wins} |" in bm or f"**{wins}**" in bm
     typing_fixed = "no type annotations" not in lim
@@ -532,11 +650,306 @@ def r7():
 
 
 def r8():
-    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    cargo = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
+    ci = read(ROOT / ".github" / "workflows" / "ci.yml")
+    cargo = read(ROOT / "Cargo.toml")
     return ('rust-version = "1.83"' in cargo and "numpy==1.23.0" in ci
             and (ROOT / "scripts" / "verify_release.py").exists()), \
         "MSRV 1.83 declared; exact dependency floors; artifact verification"
+
+
+
+# ============================================ STAGE13-REVIEW.md, findings 1-10
+def s1():
+    """A labelled, shuffled, already-subset group Series fits the same model.
+
+    Behavioural. 137 of 150 observations were assigned to the wrong cluster,
+    collapsing the random-intercept variance from 0.8776 to 0.0092.
+    """
+    rng = np.random.default_rng(0)
+    n, m = 300, 20
+    g = np.repeat(np.arange(m), n // m)
+    x = rng.normal(size=n)
+    y = 1.0 + 0.5 * x + rng.normal(0, 1.0, m)[g] + rng.normal(0, 0.4, n)
+    d = pd.DataFrame({"y": y, "x": x, "g": g},
+                     index=[f"r{i}" for i in range(n)])
+    labels = d.index[:150]
+    want = mlm.MixedLM.from_formula("y ~ x", d, groups="g",
+                                    subset=labels).fit()
+    shuffled = d.loc[labels, "g"].sample(frac=1.0, random_state=1)
+    got = mlm.MixedLM.from_formula("y ~ x", d, groups=shuffled,
+                                   subset=labels).fit()
+    gap = abs(float(got.cov_re[0, 0]) - float(want.cov_re[0, 0]))
+    return gap == 0.0, f"shuffled pre-subset groups: cov_re gap {gap:.3e}"
+
+
+def s1b():
+    """Ambiguous group input is rejected rather than guessed at."""
+    d = pd.DataFrame({"y": np.arange(40.0), "x": np.arange(40.0),
+                      "g": np.repeat(np.arange(4), 10)})
+    pos = np.arange(20, dtype=np.intp)
+    raised = 0
+    for series in (pd.Series(np.arange(20), index=["a"] * 20),
+                   pd.Series(np.arange(20),
+                             index=[f"z{i}" for i in range(20)])):
+        try:
+            mlm.mixed_linear_model._align_groups(series, d, pos)
+        except ValueError:
+            raised += 1
+    return raised == 2, f"{raised}/2 ambiguous group Series rejected"
+
+
+def _na_in_re_frame():
+    rng = np.random.default_rng(3)
+    n, m = 200, 20
+    g = np.repeat(np.arange(m), n // m)
+    x, z = rng.normal(size=n), rng.normal(size=n)
+    y = 1 + 0.5 * x + 0.3 * z + rng.normal(0, 0.5, n)
+    d = pd.DataFrame({"y": y, "x": x, "z": z, "g": g})
+    d.loc[d.index[::4], "z"] = np.nan
+    return d
+
+
+def s2():
+    """Predictions do not move across a pickle when transforms are stateful.
+
+    Behavioural. Every prediction shifted by 4.274472 because the design was
+    rebuilt from the retained frame rather than the fitted rows.
+    """
+    d = _na_in_re_frame()
+    new = pd.DataFrame({"x": [0.1, 0.5, 1.2], "z": [0.0, 1.0, -0.5],
+                        "g": [0, 1, 2]})
+    r = mlm.MixedLM.from_formula("y ~ center(x)", d, groups="g",
+                                 re_formula="~z", missing="drop").fit()
+    before = np.asarray(r.predict(new), float)
+    after = np.asarray(pickle.loads(pickle.dumps(r)).predict(new), float)
+    gap = float(np.max(np.abs(before - after)))
+    return gap == 0.0, f"center() across pickle: max shift {gap:.3e}"
+
+
+def s2b():
+    """The categorical variant rebuilt an extra column and raised."""
+    d = _na_in_re_frame()
+    d["c"] = np.where(np.arange(len(d)) % 7 == 0, "rare", "common")
+    d.loc[d["c"].eq("rare"), "z"] = np.nan
+    new = pd.DataFrame({"x": [0.1], "z": [0.0], "g": [0], "c": ["common"]})
+    r = mlm.MixedLM.from_formula("y ~ x + C(c)", d, groups="g",
+                                 re_formula="~z", missing="drop").fit()
+    before = np.asarray(r.predict(new), float)
+    after = np.asarray(pickle.loads(pickle.dumps(r)).predict(new), float)
+    return float(np.max(np.abs(before - after))) == 0.0, \
+        "C() levels rebuilt from the fitted rows, no column mismatch"
+
+
+def _square(v):
+    return np.asarray(v, float) ** 2
+
+
+def s3():
+    """A module-level transform survives; an unpicklable one is named."""
+    d = pd.DataFrame({"y": np.random.default_rng(1).normal(size=200),
+                      "x": np.random.default_rng(2).normal(size=200),
+                      "g": np.repeat(np.arange(20), 10)})
+    globals()["_square"] = _square
+    r = mlm.MixedLM.from_formula("y ~ _square(x)", d, groups="g").fit()
+    new = pd.DataFrame({"x": [0.1, 0.5]})
+    before = np.asarray(r.predict(new), float)
+    after = np.asarray(pickle.loads(pickle.dumps(r)).predict(new), float)
+    survives = bool(np.allclose(before, after, rtol=0, atol=0))
+
+    def local(v):
+        return np.asarray(v, float) ** 3
+
+    r2 = mlm.MixedLM.from_formula("y ~ local(x)", d, groups="g").fit()
+    try:
+        pickle.loads(pickle.dumps(r2)).predict(new)
+        named = False
+    except ValueError as exc:
+        text = str(exc)
+        named = "local" in text and "were dropped" not in text
+    return survives and named, \
+        "module-level transform round-trips; a closure fails naming itself"
+
+
+def s3b():
+    """A failed rebuild leaves no half-built design behind."""
+    d = pd.DataFrame({"y": np.random.default_rng(1).normal(size=200),
+                      "x": np.random.default_rng(2).normal(size=200),
+                      "g": np.repeat(np.arange(20), 10)})
+
+    def local(v):
+        return np.asarray(v, float) ** 3
+
+    r = mlm.MixedLM.from_formula("y ~ local(x)", d, groups="g",
+                                 re_formula="~x").fit()
+    m = pickle.loads(pickle.dumps(r)).model
+    ok = m._ensure_design_info() is False
+    return ok and m._design_info is None and m._re_design_info is None, \
+        "no partial design metadata after a failed reconstruction"
+
+
+def s4():
+    """The declared floors are the ones execution supports.
+
+    patsy 0.5.0/0.5.1 raise `ImportError: cannot import name 'Mapping'` and
+    0.5.2 fails its own version comparison, on every supported Python.
+    """
+    floors = {"numpy": "1.23", "scipy": "1.9", "pandas": "1.5",
+              "patsy": "0.5.3"}
+    data = tomllib.loads(read(ROOT / "pyproject.toml"))
+    declared = dict(spec.split(">=")
+                    for spec in data["project"]["dependencies"])
+    req = dict(line.split(">=") for line in
+               read(ROOT / "requirements-runtime.txt").splitlines()
+               if ">=" in line and not line.startswith("#"))
+    ci = read(ROOT / ".github" / "workflows" / "ci.yml")
+    pinned = all(f'"{n}=={v if v.count(".") == 2 else v + ".0"}"' in ci
+                 for n, v in floors.items())
+    return declared == floors and req == floors and pinned, \
+        f"metadata, requirements and CI all at {floors}"
+
+
+def s5():
+    """The job that runs this checker supplies what it needs."""
+    ci = read(ROOT / ".github" / "workflows" / "ci.yml")
+    job = ci[ci.index("  native-safety:"):ci.index("  install-smoke:")]
+    have = ("maturin sdist" in job and "cargo install cargo-audit" in job
+            and "verify_review_findings.py" in job)
+    src = read(ROOT / "scripts" / "verify_review_findings.py")
+    # A top-level call, at column zero. Searching the whole file finds this
+    # check's own source, and splitting on "GROUPS = [" finds it too.
+    guarded = any(line == "require_prerequisites()"
+                  for line in src.splitlines())
+    return have and guarded, \
+        "sdist built and cargo-audit installed in-job; guard is called"
+
+
+def s6():
+    """The document checks fail when the claim is removed.
+
+    A check that passes against a file with its claim deleted verifies
+    nothing. Each control mutates one file, re-runs one check, and requires it
+    to report failure.
+    """
+    controls = [
+        ("README.md", "Currently verified", s10c),
+        ("docs/COMPATIBILITY.md", "`np.asarray(cov_re)[0, 0]` works on both",
+         s10b),
+        ("docs/LIMITATIONS.md", "no universal formula round-trip guarantee",
+         s10d),
+    ]
+    survived = []
+    for filename, phrase, check_fn in controls:
+        with without(ROOT / filename, phrase):
+            if check_fn()[0]:
+                survived.append(f"{check_fn.__name__} passes without {phrase!r}")
+    return not survived, \
+        (f"{len(controls)}/{len(controls)} document checks fail when their "
+         "claim is removed" if not survived else "; ".join(survived))
+
+
+def s7():
+    """The wheel carries the upstream notices, by content."""
+    wheels = sorted((ROOT / "dist").glob("*.whl"),
+                    key=lambda q: q.stat().st_mtime)
+    if not wheels:
+        return False, "no wheel built"
+    with zipfile.ZipFile(wheels[-1]) as z:
+        names = z.namelist()
+        name = next((n for n in names
+                     if n.endswith("THIRD-PARTY-LICENSES.md")), None)
+        body = z.read(name).decode("utf-8") if name else ""
+    crates = [c for c in ("numpy", "pyo3", "rayon", "ndarray")
+              if f"## {c} " in body]
+    ok = (bool(name)
+          and "Redistribution and use in source and binary forms" in body
+          and body.count("Copyright") >= 5
+          and len(crates) == 4)
+    return ok, (f"wheel ships BSD-2/MIT texts for {len(crates)}/4 crates, "
+                f"{body.count('Copyright')} copyright notices")
+
+
+def s8():
+    """The evaluation-count ranges agree with the measured table."""
+    text = read(ROOT / "docs" / "BENCHMARKS.md")
+    start = text.index("## What the analytic gradient buys")
+    section = text[start:text.index("\n## ", start + 1)]
+    numeric, analytic = [], []
+    for line in section.splitlines():
+        if not line.startswith("|") or "---" in line:
+            continue
+        cells = [c.strip().strip("*") for c in line.strip("|").split("|")]
+        if len(cells) != 5 or not cells[0].replace(",", "").isdigit():
+            continue
+        numeric.append(int(cells[2]))
+        analytic.append(int(cells[3]))
+    want_n = f"{min(numeric)}\u2013{max(numeric)}"
+    want_a = f"{min(analytic)}\u2013{max(analytic)}"
+    readme = read(ROOT / "README.md")
+    ok = (want_n in readme and want_a in readme
+          and "44\u201380" not in readme and "11\u201316" not in readme)
+    return ok, f"README quotes the measured {want_n} to {want_a}"
+
+
+def s9():
+    """The baseline gates catch what they claim to.
+
+    Three separate defects: the freshness check fired on a lint-config edit,
+    the recorder reported success with a failing cargo run, and the document
+    validator accepted a count recorded for a different outcome.
+    """
+    src = read(ROOT / "tests" / "test_baseline.py")
+    rec = read(ROOT / "bench" / "baseline.py")
+    narrowed = "_pyproject_build_sections" in src and '"bench"' in src
+    paired = "recorded runs" in src and "allowed = {c[key]" in src
+    complete = "test_documented_outcome_tables_are_complete" in src
+    working_tree = "--exclude-standard" in src
+    shallow = "fetch-depth" in read(ROOT / ".github" / "workflows" / "ci.yml")
+    binary = "_extension_identity" in rec and "extension_sha256" in rec
+    suites = "failed = [name for name, run in" in rec
+    checks = {"narrowed": narrowed, "label-paired": paired,
+              "row-complete": complete, "working-tree": working_tree,
+              "full-history": shallow, "binary-identity": binary,
+              "all-suites": suites}
+    bad = [k for k, v in checks.items() if not v]
+    return not bad, ("freshness, identity, pairing and propagation all fixed"
+                     if not bad else f"missing: {bad}")
+
+
+def s10():
+    """use_sparse warns, as the compatibility contract says it does."""
+    d = pd.DataFrame({"y": np.random.default_rng(0).normal(size=100),
+                      "x": np.random.default_rng(1).normal(size=100),
+                      "g": np.repeat(np.arange(10), 10)})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        mlm.MixedLM.from_formula("y ~ x", d, groups="g", use_sparse=True)
+    warned = any("use_sparse" in str(w.message) for w in caught)
+    with warnings.catch_warnings(record=True) as quiet:
+        warnings.simplefilter("always")
+        mlm.MixedLM.from_formula("y ~ x", d, groups="g")
+    silent = not any("use_sparse" in str(w.message) for w in quiet)
+    return warned and silent, "non-default use_sparse warns; the default does not"
+
+
+def s10b():
+    text = read(ROOT / "docs" / "COMPATIBILITY.md")
+    return ("`np.asarray(cov_re)[0, 0]` works on both" in text
+            and "`cov_re[0, 0]` works on both" not in text), \
+        "the documented portable accessor is the one that works on both"
+
+
+def s10c():
+    text = read(ROOT / "README.md")
+    return ("Currently verified" in text
+            and "Same classes, same arguments" not in text), \
+        "install and compatibility claims match what has been run"
+
+
+def s10d():
+    text = read(ROOT / "docs" / "LIMITATIONS.md")
+    return ("no universal formula round-trip guarantee" in text
+            and "the exact rows the model was fitted on" in text), \
+        "the persistence promise is narrowed to what is delivered"
 
 
 GROUPS = [
@@ -546,7 +959,32 @@ GROUPS = [
          f27, f28, f29, f30, f31, f32, f33, f34, f35, f36, f37, f38, f39], 1)]),
     ("RECHECK", [(f"R{i}", fn) for i, fn in enumerate(
         [r1, r2, r3, r4, r5, r6, r7, r8], 1)]),
+    ("STAGE13", [("S1", s1), ("S1b", s1b), ("S2", s2), ("S2b", s2b),
+                 ("S3", s3), ("S3b", s3b), ("S4", s4), ("S5", s5),
+                 ("S6", s6), ("S7", s7), ("S8", s8), ("S9", s9),
+                 ("S10", s10), ("S10b", s10b), ("S10c", s10c),
+                 ("S10d", s10d)]),
 ]
+
+# What each check is actually evidence of. Reporting a single total invited
+# reading "47/47" as certification that the package is correct, which it is
+# not: a documentation check establishes that a file says something, and a
+# release check establishes that an artifact was built here, today, on this
+# machine. Only the behavioural ones run the code and assert on the answer.
+KIND = {
+    "behaviour": {
+        "F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09", "F10",
+        "F11", "F12", "F13", "F14", "F15", "F16", "F17", "F18", "F19", "F20",
+        "F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28",
+        "R2", "R3", "R4", "R5", "R6", "R7",
+        "S1", "S1b", "S2", "S2b", "S3", "S3b", "S10",
+    },
+    "release evidence": {"F37", "R1", "S7"},
+    "negative control": {"S6"},
+}
+
+
+require_prerequisites()
 
 for group, items in GROUPS:
     for label, fn in items:
@@ -554,13 +992,38 @@ for group, items in GROUPS:
 
 width = max(len(d) for *_, d in RESULTS)
 print()
-for group in ("REVIEW", "RECHECK"):
+for group in ("REVIEW", "RECHECK", "STAGE13"):
     rows = [r for r in RESULTS if r[0] == group]
-    print(f"--- .review/{group}.md: {sum(1 for r in rows if r[2])}/{len(rows)} ---")
+    doc = {"REVIEW": "REVIEW.md", "RECHECK": "RECHECK.md",
+           "STAGE13": "STAGE13-REVIEW.md"}[group]
+    print(f"--- .review/{doc}: {sum(1 for r in rows if r[2])}/{len(rows)} ---")
     for _, label, ok, detail in rows:
         print(f"  {label}  {'PASS' if ok else '**FAIL**':9s} {detail}")
     print()
 
 failed = [r for r in RESULTS if not r[2]]
-print(f"TOTAL: {len(RESULTS) - len(failed)}/{len(RESULTS)} findings verified fixed")
+
+
+def kind_of(label):
+    for name, members in KIND.items():
+        if label in members:
+            return name
+    return "documentation"
+
+
+print(f"TOTAL: {len(RESULTS) - len(failed)}/{len(RESULTS)} checks pass")
+for name in ("behaviour", "release evidence", "negative control",
+             "documentation"):
+    rows = [r for r in RESULTS if kind_of(r[1]) == name]
+    if rows:
+        print(f"  {name:18s} {sum(1 for r in rows if r[2])}/{len(rows)}")
+print()
+print(textwrap.fill(
+    "What this establishes: the behavioural checks re-run each reviewer's "
+    "own case and assert on the answer. The documentation checks establish "
+    "that a file says a particular thing -- the negative controls confirm "
+    "they fail when it does not -- and the release checks establish that an "
+    "artifact built on this machine has the expected contents. Passing is "
+    "evidence that these specific defects are fixed. It is not a claim that "
+    "the package is free of defects nobody has looked for.", 78))
 sys.exit(1 if failed else 0)

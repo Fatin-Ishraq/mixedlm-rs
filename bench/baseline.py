@@ -38,6 +38,36 @@ sys.path.insert(0, str(ROOT / "tests"))
 warnings.simplefilter("always")
 
 
+def _extension_identity() -> dict:
+    """Which compiled binary actually produced these numbers.
+
+    The Python sources live inside the wheel, so an editable checkout and an
+    installed wheel can disagree while both reporting version 0.1.0. A
+    baseline that records only the version string cannot tell you whether its
+    numbers came from the tree you are looking at. The extension's path and a
+    content hash can.
+    """
+    import hashlib
+
+    import mixedlm_rs
+    from mixedlm_rs import _mixedlm_rs
+
+    path = getattr(_mixedlm_rs, "__file__", None)
+    digest, size = None, None
+    if path and pathlib.Path(path).is_file():
+        raw = pathlib.Path(path).read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        size = len(raw)
+    package = pathlib.Path(mixedlm_rs.__file__).resolve().parent
+    return {
+        "extension_path": path,
+        "extension_sha256": digest,
+        "extension_bytes": size,
+        "package_path": str(package),
+        "imported_from_checkout": str(ROOT.resolve()) in str(package),
+    }
+
+
 def environment() -> dict:
     import mixedlm_rs
 
@@ -67,6 +97,7 @@ def environment() -> dict:
         "machine": platform.machine(),
         "processor": platform.processor(),
         "dependencies": versions,
+        **_extension_identity(),
     }
 
 
@@ -247,8 +278,14 @@ def main() -> int:
                             encoding="utf-8")
 
     print(f"\nwrote {args.out}")
-    if payload.get("suites", {}).get("pytest", {}).get("returncode", 0) != 0:
-        print("the recorded pytest run FAILED; this baseline is not usable")
+    # Every recorded suite has to have passed. Checking pytest alone let a
+    # failing `cargo test` be written into the file and reported as success,
+    # which makes the baseline a record of a broken build rather than a gate.
+    failed = [name for name, run in payload.get("suites", {}).items()
+              if run.get("returncode", 0) != 0]
+    if failed:
+        print(f"the recorded {' and '.join(failed)} run(s) FAILED; "
+              "this baseline is not usable")
         return 1
     return 0
 

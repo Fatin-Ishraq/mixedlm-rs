@@ -14,6 +14,7 @@ wrong rather than merely different; every such case is documented in
 from __future__ import annotations
 
 import os
+import re
 import warnings
 from collections.abc import Sequence
 from typing import Any
@@ -377,14 +378,35 @@ def _nonempty(positions):
     return positions
 
 
+def _index_is_positional(index, length):
+    """True when ``index`` carries no information beyond row position.
+
+    A default ``RangeIndex(0, n)`` is what you get from a Series built out of a
+    bare array, so its labels say nothing the position does not already say.
+    Any other index is the caller telling us which rows the values belong to,
+    and we must not silently override it.
+    """
+    if not isinstance(index, pd.RangeIndex):
+        return False
+    return index.start == 0 and index.step == 1 and len(index) == length
+
+
 def _align_groups(groups, data, positions):
     """Resolve ``groups`` against ``data`` and apply the subset selection.
 
-    ``groups`` may be a column name, a Series, or an array. A Series is aligned
-    by *index* when its index matches the frame's, and positionally otherwise;
-    an array is positional. Either way it is resolved against the **unsubset**
-    frame and then subset alongside it, so a caller does not have to subset it
-    themselves and cannot half-subset it by accident.
+    ``groups`` may be a column name, a Series, or an array.
+
+    A **Series is aligned by index label** whenever its labels can address the
+    frame, which is what pandas itself would do and what the caller means when
+    they hand over a labelled object. Only a Series whose index carries no
+    information -- a default ``RangeIndex`` -- is aligned by position.
+
+    Aligning a labelled Series positionally is a silent-wrong-answer bug: a
+    caller who subsets and then sorts or shuffles their group Series gets a
+    model fitted on scrambled cluster membership, which returns a plausible
+    number rather than an error. Input we cannot resolve is rejected instead.
+
+    An array is positional; it has no labels to align by.
     """
     if isinstance(groups, str):
         if groups not in data.columns:
@@ -394,17 +416,7 @@ def _align_groups(groups, data, positions):
         return np.asarray(data[groups])[positions]
 
     if isinstance(groups, pd.Series):
-        if groups.index.equals(data.index):
-            return np.asarray(groups.to_numpy())[positions]
-        if len(groups) == len(data):
-            return np.asarray(groups.to_numpy())[positions]
-        if len(groups) == len(positions):
-            # Already subset by the caller.
-            return np.asarray(groups.to_numpy())
-        raise ValueError(
-            f"groups has length {len(groups)}, which matches neither `data` "
-            f"({len(data)} rows) nor the subset selection ({len(positions)} "
-            "rows)")
+        return _align_group_series(groups, data, positions)
 
     arr = np.asarray(groups)
     if arr.ndim != 1:
@@ -417,6 +429,132 @@ def _align_groups(groups, data, positions):
     raise ValueError(
         f"groups has length {arr.size}, which matches neither `data` "
         f"({len(data)} rows) nor the subset selection ({len(positions)} rows)")
+
+
+def _align_group_series(groups, data, positions):
+    """Align a group Series to the selected rows of ``data``.
+
+    The order of these branches is the whole point. Label alignment is tried
+    first and positional alignment is a narrow fallback, because the failure
+    mode of getting this backwards is silent.
+    """
+    selected = data.index[positions]
+
+    if groups.index.equals(data.index):
+        # Same labels in the same order: position and label agree.
+        return np.asarray(groups.to_numpy())[positions]
+
+    label_addressable = (
+        data.index.is_unique
+        and groups.index.is_unique
+        and bool(groups.index.isin(data.index).all())
+    )
+    if label_addressable:
+        absent = selected[~selected.isin(groups.index)]
+        if len(absent):
+            shown = list(absent[:5])
+            raise ValueError(
+                f"`groups` is missing {len(absent)} of the {len(selected)} "
+                f"selected row label(s), for example {shown}"
+                + (" ..." if len(absent) > len(shown) else "")
+                + ". A group Series is aligned to `data` by index label; "
+                  "every selected row needs a group.")
+        return np.asarray(groups.reindex(selected).to_numpy())
+
+    # The labels cannot address the frame. Fall back to position only when the
+    # index says nothing -- otherwise we would be discarding labels the caller
+    # meant, which is exactly the bug this function exists to prevent.
+    for length, take in ((len(data), True), (len(positions), False)):
+        if len(groups) == length and _index_is_positional(groups.index, length):
+            values = np.asarray(groups.to_numpy())
+            return values[positions] if take else values
+
+    if not data.index.is_unique:
+        raise ValueError(
+            "`data` has a non-unique index, so a `groups` Series cannot be "
+            "aligned to it by label. Pass `groups` as a column name of "
+            "`data`, or as a plain array in row order.")
+    if not groups.index.is_unique:
+        raise ValueError(
+            "`groups` has duplicate index labels, so it cannot be aligned to "
+            "`data` by label. Pass a column name of `data`, or a plain array "
+            "in row order.")
+
+    stray = groups.index[~groups.index.isin(data.index)]
+    raise ValueError(
+        f"`groups` has {len(stray)} index label(s) that are not in the index "
+        f"of `data`, for example {list(stray[:5])}"
+        + (" ..." if len(stray) > 5 else "")
+        + f", so it cannot be aligned by label; and its length ({len(groups)}) "
+          f"with a non-positional index cannot be aligned by row order "
+          f"either. `data` has {len(data)} rows and the selection has "
+          f"{len(positions)}. Pass a column name of `data`, a Series indexed "
+          "like `data`, or a plain array in row order.")
+
+
+_PY_IDENTIFIER = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
+
+
+def _formula_namespace(formula, re_formula, eval_env):
+    """Capture the caller-defined names a formula depends on.
+
+    patsy resolves ``custom(x)`` out of the caller's namespace at fit time. The
+    fitted model outlives that namespace, so the design cannot be rebuilt after
+    a pickle round-trip unless the objects come along.
+
+    Only names the formula actually mentions are captured, only when they are
+    not columns of the data, and only when they pickle. A module-level function
+    -- the ordinary case -- pickles by qualified name and costs nothing. A
+    lambda or a closure does not pickle; it is left behind deliberately, and
+    :meth:`_ensure_design_info` reports it by name rather than guessing.
+    """
+    if eval_env is None:
+        return {}
+    text = str(formula) + " " + ("" if re_formula is None else str(re_formula))
+    wanted = set(_PY_IDENTIFIER.findall(text))
+    if not wanted:
+        return {}
+
+    import pickle
+    from types import ModuleType
+
+    captured = {}
+    namespaces = list(getattr(eval_env, "_namespaces", ()))
+    for name in sorted(wanted):
+        for ns in namespaces:
+            try:
+                if name not in ns:
+                    continue
+                value = ns[name]
+            except Exception:
+                continue
+            if isinstance(value, ModuleType):
+                break
+            try:
+                pickle.loads(pickle.dumps(value))
+            except Exception:
+                # Not portable across the pickle boundary. Recording the name
+                # with no value lets the restore path say which transform is
+                # missing instead of blaming the retained training frame.
+                captured[name] = _Unpicklable(name, type(value).__name__)
+            else:
+                captured[name] = value
+            break
+    return captured
+
+
+class _Unpicklable:
+    """Placeholder for a formula name that could not be carried through pickle.
+
+    Held so the failure can be *named*. Without it the restore path only sees
+    that the formula stopped evaluating and has to guess at the reason.
+    """
+
+    __slots__ = ("kind", "name")
+
+    def __init__(self, name, kind):
+        self.name = name
+        self.kind = kind
 
 
 def _group_is_present(groups):
@@ -474,6 +612,15 @@ class MixedLM:
         self.exog_names = kwargs.pop("exog_names", None)
         self._endog_name = kwargs.pop("endog_name", None) or "y"
         self.data_frame = kwargs.pop("_data_frame", None)
+        # Which rows of `data_frame` the design was actually built on.
+        # Missing-data handling can drop rows across *both* formulas at
+        # once, so rebuilding the design later has to reproduce that same
+        # selection or the stateful transforms relearn different state.
+        self._design_rows: np.ndarray | None = kwargs.pop(
+            "_design_rows", None)
+        self._formula_namespace: dict[str, Any] | None = kwargs.pop(
+            "_formula_namespace", None)
+        self._design_rebuild_error: str | None = None
         self.formula = kwargs.pop("formula", None)
         self.re_formula = kwargs.pop("re_formula", None)
         self._exog_re_names = kwargs.pop("exog_re_names", None)
@@ -569,6 +716,19 @@ class MixedLM:
                 "vc_formula (variance components) is not implemented in this "
                 "release; see docs/LIMITATIONS.md."
             )
+        if use_sparse:
+            # Accepted for signature compatibility and then ignored, like
+            # `niter_sa` and `do_cg` in fit(). Those warn; this one did not,
+            # while the documentation promised that it did. A silently ignored
+            # argument is the specific thing a compatibility layer must not do.
+            warnings.warn(
+                "use_sparse=True is accepted for statsmodels compatibility "
+                "and ignored: this implementation factorises the "
+                "block-diagonal system directly, which is already the "
+                "efficient path for a single grouping factor. There is no "
+                "dense fallback to switch away from. See "
+                "docs/LIMITATIONS.md.",
+                UserWarning, stacklevel=2)
         from patsy import EvalEnvironment
 
         groups = kwargs.pop("groups", None)
@@ -609,7 +769,11 @@ class MixedLM:
                    formula=formula, re_formula=re_formula,
                    _design_info=fe_design,
                    _re_design_info=re_design,
-                   _data_frame=data, **kwargs)
+                   _data_frame=data,
+                   _design_rows=kept,
+                   _formula_namespace=_formula_namespace(
+                       formula, re_formula, eval_env),
+                   **kwargs)
 
     # -- fitting ------------------------------------------------------------
     def fit(
@@ -803,18 +967,37 @@ class MixedLM:
             # rebuilt -- the frame it was fitted on was not retained. Telling
             # the caller to "pass a DataFrame and leave transform=True" here,
             # as this once did, advises exactly the thing that just failed.
+            reason = getattr(self, "_design_rebuild_error", None)
+            if reason == "no-frame" or reason is None:
+                cause = (
+                    "it is normally rebuilt from the rows the model was "
+                    "fitted on, and those were dropped -- by "
+                    "save(with_data=False), or by a pickle written before "
+                    "this was supported.")
+            else:
+                cause = (
+                    "it is normally rebuilt by re-running the formula against "
+                    "the rows the model was fitted on, and that re-run failed: "
+                    f"{reason}. The training rows were retained, so this is "
+                    "the formula itself no longer evaluating -- most often a "
+                    "transform defined in the session that saved the model "
+                    "(a lambda or a closure cannot be pickled; a "
+                    "module-level function can).")
             raise ValueError(
                 "this model was fitted from the formula "
                 f"{self.formula!r}, but its patsy design metadata is not "
                 "available, so raw new data cannot be converted into a design "
-                "matrix. patsy cannot pickle a DesignInfo (pydata/patsy#26); "
-                "it is normally rebuilt from the frame the model was fitted "
-                "on, and that frame was dropped -- by save(with_data=False), "
-                "or by a pickle written before this was supported. Either "
-                "re-fit the model, or build the design yourself and pass it "
-                "with transform=False: "
-                "`X = patsy.dmatrix(<the right-hand side of your formula>, "
-                "new_data)` then `result.predict(X, transform=False)`.")
+                f"matrix. patsy cannot pickle a DesignInfo (pydata/patsy#26); "
+                f"{cause} Either re-fit the model, or build the design "
+                "yourself and pass it with transform=False -- but build "
+                "it against the *training* frame first so any stateful "
+                "transform learns the training state: "
+                "`d = patsy.dmatrix(<rhs>, training_data).design_info` then "
+                "`result.predict(patsy.dmatrix(d, new_data), "
+                "transform=False)`. Building `patsy.dmatrix(<rhs>, new_data)` "
+                "directly re-learns centring means, spline knots and "
+                "categorical levels from the new data, which silently fits "
+                "the prediction to a different design.")
         else:
             X = np.asarray(exog, float)
             if X.ndim == 1:
@@ -900,6 +1083,48 @@ class MixedLM:
         self.__dict__.update(state)
         self.__dict__.setdefault("_design_info", None)
         self.__dict__.setdefault("_re_design_info", None)
+        # Pickles written by earlier versions carry neither, and a model whose
+        # design was built without missing-data filtering does not need them.
+        self.__dict__.setdefault("_design_rows", None)
+        self.__dict__.setdefault("_formula_namespace", None)
+        self.__dict__.setdefault("_design_rebuild_error", None)
+
+    def _training_frame(self):
+        """The exact rows the design was fitted on.
+
+        Not ``data_frame`` itself: when ``missing="drop"`` removed rows, it
+        removed them across the fixed *and* random formulas together, and
+        ``data_frame`` still holds them. Rebuilding on the unfiltered frame
+        lets a stateful transform relearn different state -- ``center()`` over
+        a different mean, ``C()`` over an extra level -- so predictions move,
+        or the design comes back with the wrong number of columns.
+        """
+        frame = self.data_frame
+        if frame is None:
+            return None
+        rows = self._design_rows
+        if rows is None:
+            return frame
+        return frame.iloc[np.asarray(rows, dtype=np.intp)]
+
+    def _restore_eval_env(self):
+        """Rebuild an eval environment for the captured formula names.
+
+        Returns ``(eval_env, missing_names)``. Anything that did not survive
+        the pickle is reported by name so the caller learns which transform is
+        gone instead of being told the training data was discarded.
+        """
+        ns = self._formula_namespace
+        if not ns:
+            return None, []
+        missing = sorted(v.name for v in ns.values()
+                         if isinstance(v, _Unpicklable))
+        usable = {k: v for k, v in ns.items()
+                  if not isinstance(v, _Unpicklable)}
+        if not usable:
+            return None, missing
+        from patsy import EvalEnvironment
+        return EvalEnvironment([usable]), missing
 
     def _ensure_design_info(self) -> bool:
         """Rebuild patsy's design metadata after a pickle round-trip.
@@ -909,36 +1134,81 @@ class MixedLM:
         boundary -- and the resulting error told the caller to pass raw new
         data, which is exactly what had just failed.
 
-        So the design is *reconstructed* instead. Re-running the formula
-        against the frame the model was fitted on reproduces the identical
-        ``DesignInfo``, including whatever the stateful transforms learned
-        (``C()`` levels, ``center()`` means, spline knots) -- which is why the
-        frame has to be the training one and not the new data.
+        So the design is *reconstructed* instead: the formula is re-run against
+        the rows the model was fitted on, which reproduces the identical
+        ``DesignInfo``, stateful transforms included (``C()`` levels,
+        ``center()`` means, spline knots). Both halves of that matter -- the
+        same formula *and* the same rows.
 
-        Returns True when a fixed-effect design is available afterwards.
+        Returns True when a fixed-effect design is available afterwards; the
+        reason for a False is kept in ``_design_rebuild_error`` for predict().
         """
         if self._design_info is not None:
             return True
-        if self.formula is None or self.data_frame is None:
+        if self.formula is None:
+            self._design_rebuild_error = "no formula"
+            return False
+        frame = self._training_frame()
+        if frame is None:
+            self._design_rebuild_error = "no-frame"
             return False
 
         from patsy import dmatrices, dmatrix
 
+        eval_env, missing_names = self._restore_eval_env()
+        kwargs = {} if eval_env is None else {"eval_env": eval_env}
         try:
-            _, design = dmatrices(self.formula, self.data_frame,
-                                  return_type="matrix", NA_action="drop")
-            self._design_info = design.design_info
+            # NA_action="raise": these rows are the complete cases already, so
+            # anything patsy would drop here is a bug worth surfacing, not
+            # silently filtering a second time.
+            _, design = dmatrices(self.formula, frame, return_type="matrix",
+                                  NA_action="raise", **kwargs)
+            fe_info = design.design_info
+            re_info = self._re_design_info
             rf = self.re_formula
             if rf is not None and str(rf).strip() not in ("1", "~1", ""):
-                self._re_design_info = dmatrix(
-                    str(rf), self.data_frame, return_type="matrix",
-                    NA_action="drop").design_info
-        except Exception:
-            # The formula no longer evaluates against the retained frame. There
-            # is nothing useful to do here; predict() reports it and names the
-            # cause, rather than failing with a shape error.
+                re_info = dmatrix(str(rf), frame, return_type="matrix",
+                                  NA_action="raise", **kwargs).design_info
+
+            # The rebuild has to reproduce the design that was *fitted*, not
+            # merely produce a design. A stateful transform that relearned
+            # different state shows up here as a different column count or
+            # different column names, and predicting through it would return
+            # plausible numbers from the wrong model.
+            self._check_rebuilt(fe_info, np.asarray(design).shape[0])
+        except Exception as exc:
+            # Assigned only on full success. Keeping a half-rebuilt design
+            # leaves the model in a state where the fixed part was relearned
+            # and the random part was not, which is worse than no design.
+            self._design_rebuild_error = (
+                f"{type(exc).__name__}: {exc}"
+                + (f" (formula names not carried through the pickle: "
+                   f"{missing_names})" if missing_names else ""))
             return False
+        self._design_info = fe_info
+        self._re_design_info = re_info
         return True
+
+    def _check_rebuilt(self, fe_info, n_rows) -> None:
+        """Assert the rebuilt design matches the one that was fitted."""
+        names = list(fe_info.column_names)
+        if len(names) != self.k_fe:
+            raise ValueError(
+                f"rebuilding the design from the training rows produced "
+                f"{len(names)} fixed-effect columns, but the model was fitted "
+                f"with {self.k_fe} ({names} against "
+                f"{list(self.exog_names or [])}). A stateful transform in "
+                f"{self.formula!r} relearned different state; the rebuilt "
+                "design describes a different model and is discarded.")
+        expected = list(self.exog_names or [])
+        if expected and names != expected:
+            raise ValueError(
+                f"rebuilding the design produced different column names: "
+                f"{names} against the fitted {expected}.")
+        if n_rows != self.exog.shape[0]:
+            raise ValueError(
+                f"rebuilding the design produced {n_rows} rows, but the model "
+                f"was fitted on {self.exog.shape[0]}.")
 
     def fit_regularized(self, *args: Any, **kwargs: Any) -> MixedLMResults:
         raise NotImplementedError(

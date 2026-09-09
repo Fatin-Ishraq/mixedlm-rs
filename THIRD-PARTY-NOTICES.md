@@ -8,6 +8,17 @@ else it builds on, what ships in the distributed artifacts, and what does not.
 The wheel contains the Python package, the compiled extension, `py.typed` and
 the type stub. The compiled extension statically links the Rust crates below.
 
+Because the extension is statically linked, the wheel *is* a binary
+redistribution of those crates, and MIT, BSD-2-Clause and Apache-2.0 each
+require the copyright notice, conditions and disclaimer to accompany it. Naming
+the licences here and in the SBOM does not satisfy that. The full upstream text
+of every linked crate is therefore reproduced in
+[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md), which is generated from the
+crate sources by `scripts/collect_notices.py` and ships inside the wheel and the
+sdist at `mixedlm_rs-<version>.dist-info/licenses/`. An earlier release candidate
+shipped only our own LICENSE, which was a licence violation rather than an
+oversight in documentation.
+
 | crate | licence | role |
 |---|---|---|
 | [`pyo3`](https://github.com/PyO3/pyo3) | MIT OR Apache-2.0 | Python bindings |

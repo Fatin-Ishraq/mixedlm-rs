@@ -47,7 +47,12 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
+      # Full history: tests/test_baseline.py resolves the commit the
+      # numerical baseline was recorded at, and the default depth-1 checkout
+      # does not contain it -- which silently disabled that gate in CI.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
@@ -68,22 +73,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
       - uses: dtolnay/rust-toolchain@stable
-      # pyproject declares numpy>=1.23, scipy>=1.9, pandas>=1.5, patsy>=0.5.
+      # pyproject declares numpy>=1.23, scipy>=1.9, pandas>=1.5, patsy>=0.5.3.
       # These are pinned to the *exact* advertised minimum, not to the release
       # series: "numpy==1.23.*" resolves to 1.23.5, which is not the version
       # the metadata promises to work. If 1.23.0 does not work, the floor is
-      # wrong and should be raised rather than quietly relied upon.
+      # wrong and should be raised rather than quietly relied upon -- which is
+      # what happened to patsy: this job pinned 0.5.0, and 0.5.0 cannot be
+      # imported on any Python this package supports.
       - name: Build and install at the exact declared floor
         run: |
           python -m pip install --upgrade pip maturin
           python -m maturin build --release --out dist
           python -m pip install --find-links dist --no-index --no-deps mixedlm-rs
           python -m pip install "numpy==1.23.0" "scipy==1.9.0" "pandas==1.5.0" \
-                                "patsy==0.5.0" pytest
+                                "patsy==0.5.3" pytest
       - name: Show what was resolved
         run: python -m pip list | grep -Ei "numpy|scipy|pandas|patsy"
       - name: Python tests (statsmodels absent; differential tests skip)
@@ -122,6 +131,14 @@ jobs:
           python -m maturin build --release --out dist
           python -m pip install --find-links dist --no-index --no-deps mixedlm-rs
           python -m pip install numpy scipy pandas patsy pytest
+      # The checker inspects an sdist and shells out to cargo-audit. Neither
+      # exists in a fresh job just because another job built or installed it --
+      # jobs share no filesystem and no tools. Without these two steps the
+      # checker cannot run those cases, which is the whole point of running it.
+      - name: Build the sdist the checker inspects
+        run: python -m maturin sdist --out dist
+      - name: Install cargo-audit, which the checker shells out to
+        run: cargo install cargo-audit --locked
       # Every finding from the two external reviews, re-checked against the
       # built artifact. Documentation claims are read from the files, and the
       # native-safety cases run in child processes.
