@@ -63,8 +63,12 @@ than missing features, and several were being reported as successes.
 
 - `pwrss` was computed as `y'y - beta'X'y - u'Lambda'Z'y`, a difference of large
   nearly equal quantities. With a response around 1e8 the fit returned a
-  confidently converged wrong answer — log-likelihood off by 224, residual
-  variance off by an order of magnitude. Fixed by the OLS response offset above.
+  confidently converged wrong answer. On a 200-row random-intercept fixture,
+  shifting `y` by 1e8 moved the log-likelihood from -174.042190 to -455.702427
+  and the residual variance from 0.243 to 4.408, still reporting
+  `converged=True`; lme4 and statsmodels are both invariant to the shift.
+  Fixed by the OLS response offset above, after which all four shifts tested
+  (0, 1e4, 1e6, 1e8) agree to the last printed digit.
 - Convergence was `optimiser_flag or stationary`, so a loose `ftol` reported
   success at a projected gradient of 19.
 - The stationarity tolerance keyed off the deviance, which shifts by a constant

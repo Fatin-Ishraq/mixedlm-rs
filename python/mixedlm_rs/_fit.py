@@ -197,13 +197,20 @@ def fit_core(
 
     Returns a plain dict; the estimator classes wrap it.
 
-    The random-effects design is internally rescaled to unit column RMS. This is
-    an *exact* reparameterisation, not an approximation: substituting Z -> Z D^-1
-    and Lambda -> D Lambda leaves Lambda' Z'Z Lambda + I unchanged, so the whole
-    criterion surface is identical and only the coordinates move. What it buys is
-    conditioning -- theta = I becomes a sensible starting point whatever units
-    the predictors are in. Results are transformed back before being returned,
-    so nothing about this is visible to the caller.
+    Three exact reparameterisations are applied before anything is computed,
+    and undone before anything is returned, so none of them is visible to the
+    caller:
+
+    1. **Random-effects columns to unit RMS.** Substituting `Z -> Z D^-1` and
+       `Lambda -> D Lambda` leaves `Lambda' Z'Z Lambda + I` unchanged, so the
+       criterion surface is identical and only the coordinates move. It makes
+       `theta = I` a sensible start whatever units the predictors are in.
+    2. **Fixed-effect columns to unit RMS**, for the conditioning of the
+       fixed-effect solve. This one *does* shift the REML criterion, by
+       `2 * sum(log d)` through `log|X'V^-1 X|`; the constant is restored below.
+    3. **Response offset by its OLS fit**, which is what makes the criterion
+       computable at all when the response is far from zero. See
+       `_condition_design`.
     """
     Z = np.ascontiguousarray(Z, dtype=np.float64)
 

@@ -1,8 +1,21 @@
 # Test fixtures
 
-These CSVs are **test fixtures only**. They are not bundled in the wheel — the
-built distribution contains nothing but the Python package and the compiled
-extension (verified: no `.csv` and no `data/` entries in the wheel).
+These CSVs are **test fixtures only**, and they are **GPL-2**, while this
+project is MIT. They are therefore excluded from *both* distributed artifacts:
+
+- the **wheel** contains nothing but the Python package and the compiled
+  extension;
+- the **source archive** excludes this directory too, via `exclude` in
+  `Cargo.toml` — which is the lever that matters, because maturin builds the
+  sdist from Cargo's file list, not from `[tool.maturin]`.
+
+An earlier release candidate did ship them in the sdist while the README said
+otherwise. The `sdist-contents` CI job now fails the build if a `data/` entry
+reappears in the archive.
+
+They live in the git repository only. `tests/test_lme4_oracles.py` skips
+cleanly when the directory is absent, so the suite still runs from a
+distribution — it just checks less.
 
 | file | source | licence |
 |---|---|---|
