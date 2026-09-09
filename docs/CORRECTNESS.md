@@ -110,15 +110,34 @@ down to 1e-3.
 
 ## Identifiability
 
-With at least as many random effects as observations (`n <= q * m`), every group
-is fitted perfectly, the residual variance is driven towards zero and the
-profiled likelihood **diverges** instead of attaining a maximum. Two
-implementations will simply stop at different points along that path, and
-neither answer means anything.
+**This section was wrong and has been rewritten.** It previously argued that
+`n <= q * m` implies every group is fitted perfectly, the residual variance is
+driven to zero, and the profiled likelihood *diverges*. Both halves of that are
+false, and the counterexamples are simple:
+
+- **The rule over-fires.** With `q = 2` random effects and two observations per
+  group, `n == q * m` exactly — and the model is perfectly well identified, with
+  an interior optimum and a positive residual variance. The old check warned
+  about it purely on the row count. `tests/test_degenerate.py::
+  test_saturated_but_identified_model_does_not_warn` pins this.
+- **The rule under-fires.** A single group, whose random intercept is exactly
+  confounded with the fixed intercept, is completely unidentified, and
+  `n <= q * m` is false there (60 observations against 1 random effect).
+- **And when it does fire, the reason given was wrong.** One random intercept
+  per singleton observation gives `V = (tau^2 + sigma^2) I`. The criterion is
+  finite and exactly *constant* along the trade-off between the two variances —
+  **flat, not divergent**. Measured directly on the core: `94.395392420` at
+  `theta` = 0, 1, 10 and 100.
+
+What the code does now: the structural count decides only *where to look*, and
+the claim is settled by asking the criterion. On a suspect design the fit probes
+whether the deviance changes along the variance split, and warns only if it does
+not — saying the criterion is flat and the reported split is one arbitrary point
+on a ridge. A criterion that is unbounded rather than flat has no stationary
+point, so it surfaces as a convergence warning instead.
 
 `lme4` refuses such models outright. `statsmodels` fits them silently. Refusing
-would break the drop-in contract, so we warn -- which is the part that actually
-protects the user.
+would break the drop-in contract, so we warn.
 
 A related non-finding, worth recording because it looks like a bug and is not:
 a variance component estimated as **exactly zero is often correct**. The REML
@@ -127,6 +146,21 @@ spread is no larger than sampling noise would produce. On one such fixture
 statsmodels returns exactly 0.0 as well, with a likelihood identical to ours to
 eight decimal places. The property worth asserting is the criterion, not the
 parameter.
+
+## Singular fits are reported as such
+
+A boundary optimum is a converged fit — but it is not an ordinary one, and the
+two should not be conflated in either direction. `results.singular` is True when
+a variance component sits on its bound, `summary()` says so in the header and
+adds a note, and `docs/LIMITATIONS.md` states that Wald intervals for variance
+parameters do not apply there.
+
+This follows `lme4`, which reports singularity separately from convergence
+(`isSingular`). Reporting a boundary fit as a *convergence failure*, as
+statsmodels effectively does, is what drives people to delete random-effect
+terms until the warning goes away — an anti-conservative practice. Reporting it
+as an unremarkable success would be the opposite error: the estimate is fine,
+the inference around it is not.
 
 ## The analytic gradient
 
@@ -151,9 +185,27 @@ to a few percent. lme4 declines to report these at all, on the grounds that
 their sampling distribution is poorly behaved near the boundary — a caution
 worth taking seriously.
 
-**D-3. `cov_params()` is exact only in the fixed-effect block.** The
+**D-3. `cov_params()` carries only the fixed-effect block.** The
 variance-component rows carry the delta-method variances on the diagonal and
 `NaN` off-diagonal, rather than a fabricated full covariance.
+
+An earlier version called that block "exact". That overstates it. It is
+`sigma^2 (X' V(theta_hat)^-1 X)^-1`, the GLS covariance **conditional on the
+fitted variance parameters** — the standard mixed-model quantity, and the one
+both lme4 and statsmodels report, but not in general the fixed-effect block of
+the inverse full observed information: estimating `theta` can introduce
+cross-block terms. It is therefore mildly anti-conservative in small samples,
+which is exactly what Kenward-Roger and Satterthwaite corrections exist to fix,
+and neither is implemented here. See docs/LIMITATIONS.md.
+
+**D-6. `bse_re` follows the reference's definition, including its quirk.**
+statsmodels computes `sqrt(scale * diag(cov_params())[k_fe:])`, i.e.
+`sqrt(scale)` times the standard errors of the unscaled covariance parameters
+that `bse` reports — while the value tabulated beside them in `summary()` is
+`cov_re`, which is `scale` times that parameter. Estimate and standard error in
+that table therefore differ by a further `sqrt(scale)`. We reproduce it, because
+a drop-in that silently redefines an attribute is worse than one that documents
+an inherited wart. `bse_cov_re` gives errors on the same scale as `cov_re`.
 
 **D-4. Convergence is certified independently of the optimiser's flag.** A
 component pinned at its lower bound with the gradient pushing further into the
@@ -191,7 +243,7 @@ fixable in-tree.
 pip install maturin pytest numpy scipy pandas patsy statsmodels
 python -m maturin build --release --out dist
 pip install --force-reinstall --no-deps --no-index --find-links dist mixedlm-rs
-pytest tests/ -q      # 222 tests
+pytest tests/ -q      # 241 tests
 cargo test --lib      # 7 tests
 ```
 

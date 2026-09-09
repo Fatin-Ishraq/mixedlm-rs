@@ -2,19 +2,41 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
   workflow_dispatch:
 
 jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      # Lint was never actually run in CI, so "ruff clean" and "clippy clean"
+      # were claims nothing checked. The ruff rule set is pinned in
+      # pyproject.toml so it means the same thing here as locally.
+      - run: python -m pip install --upgrade pip ruff
+      - run: python -m ruff check .
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo fmt --check
+
   test:
     name: test ${{ matrix.os }} / py${{ matrix.python }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        # The package declares support for 3.10-3.14, so every one of them is
+        # tested. Declaring a range and testing one point of it is how an
+        # unsupported version ships.
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ["3.10", "3.12", "3.13"]
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -31,6 +53,121 @@ jobs:
         run: cargo test --lib
       - name: Python tests
         run: pytest tests/ -q
+
+  minimum-versions:
+    name: minimum declared dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - uses: dtolnay/rust-toolchain@stable
+      # pyproject declares numpy>=1.23, scipy>=1.9, pandas>=1.5, patsy>=0.5.
+      # A lower bound nothing tests is a guess.
+      - name: Build and install at the declared floor
+        run: |
+          python -m pip install --upgrade pip maturin
+          python -m maturin build --release --out dist
+          python -m pip install --find-links dist --no-index --no-deps mixedlm-rs
+          python -m pip install "numpy==1.23.*" "scipy==1.9.*" "pandas==1.5.*" \
+                                "patsy==0.5.*" pytest
+      - name: Python tests (statsmodels absent; differential tests skip)
+        run: pytest tests/ -q
+
+  msrv:
+    name: minimum supported Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Read rust-version from Cargo.toml
+        id: msrv
+        run: |
+          v=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - run: cargo build --release
+
+  native-safety:
+    name: malformed input must raise, not abort
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build and install
+        run: |
+          python -m pip install --upgrade pip maturin
+          python -m maturin build --release --out dist
+          python -m pip install --find-links dist --no-index --no-deps mixedlm-rs
+          python -m pip install numpy scipy pandas patsy pytest
+      # The crate is built with panic="abort", so a missing bounds check is a
+      # process kill rather than a catchable error. Each case runs in its own
+      # child process, and a non-zero exit code is the failure signal -- an
+      # in-process test cannot detect this at all.
+      - name: Native boundary tests
+        run: pytest tests/test_native_safety.py -q
+
+  install-smoke:
+    name: clean install runs the documented example
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      # Installs the base package only -- no test extra, no statsmodels -- and
+      # runs the formula example from the README. This is what catches a
+      # dependency that is documented as optional but is actually required.
+      - name: Build, install base package only, run the README example
+        run: |
+          python -m pip install --upgrade pip maturin
+          python -m maturin build --release --out dist
+          python -m pip install --find-links dist mixedlm-rs
+          python - <<'PY'
+          import numpy as np, pandas as pd, mixedlm_rs as mlm
+          rng = np.random.default_rng(0)
+          g = np.repeat(np.arange(20), 10)
+          x = rng.normal(size=200)
+          y = 1 + 0.5 * x + rng.normal(size=20)[g] + rng.normal(size=200) * 0.5
+          d = pd.DataFrame({"y": y, "x": x, "g": g})
+          r = mlm.mixedlm("y ~ x", d, groups=d["g"], re_formula="~x").fit()
+          print(r.summary())
+          assert r.converged
+          PY
+
+  sdist-contents:
+    name: source archive ships nothing GPL
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      # The lme4 fixtures under data/ are GPL-2 and this project is MIT. The
+      # sdist used to contain them, contradicting the README.
+      - name: Build sdist and check it
+        run: |
+          python -m pip install --upgrade pip maturin
+          python -m maturin sdist --out dist
+          python - <<'PY'
+          import glob, tarfile
+          [path] = glob.glob("dist/*.tar.gz")
+          with tarfile.open(path) as t:
+              names = t.getnames()
+          leaked = [n for n in names if "/data/" in n or n.endswith("/data")]
+          assert not leaked, f"GPL-2 fixtures leaked into the sdist: {leaked}"
+          print(f"{path}: {len(names)} entries, no data/ directory")
+          PY
 
   wheels:
     name: wheels ${{ matrix.os }}

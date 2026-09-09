@@ -14,8 +14,21 @@ language and gradient contributions can be read off separately:
 S1 and S2 are reproducible by anyone in NumPy. Saying so openly is what makes
 the rest of the table credible.
 
-Convergence status is reported for every row: where statsmodels does not
-converge, a speedup ratio compares against a fit that did not happen.
+**What is comparable to what.** S1-S5 all start from the same `(y, X, Z, codes)`
+and each builds whatever it needs from there -- including the cross-products,
+which S3-S5 used to receive pre-built, so their timings excluded work that S1
+and S2 were charged for. Every stage is timed with the same repeat count, so a
+best-of-3 is never compared against a single run.
+
+S0 is *not* one of those stages and its ratio is not an end-to-end speedup: it
+also parses a formula and computes inference that S1-S5 skip entirely. The
+honest end-to-end comparison is S6, the public API called on the same
+DataFrame, which does all of that work too. S0 -> S1 is reported as an upper
+bound on what profiling alone is worth, and labelled as such.
+
+Convergence status is reported for every row, and rows where statsmodels did
+not converge are excluded from the multiplier medians: a speedup against a fit
+that did not happen is not a speedup.
 """
 
 import pathlib
@@ -30,6 +43,7 @@ from scipy.optimize import minimize
 warnings.filterwarnings("ignore")
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "proto"))
 
+import mixedlm_rs as mlm
 import preml
 import statsmodels.formula.api as smf
 from mixedlm_rs import LmmCore
@@ -63,20 +77,27 @@ def timeit(fn, repeat=3):
 
 def s0(df):
     r = smf.mixedlm("y ~ x1 + x2", df, groups=df["g"], re_formula="~x1").fit()
-    return np.asarray(r.fe_params, float), bool(r.converged), int(getattr(r, "nit", 0) or 0)
+    return (np.asarray(r.fe_params, float), bool(r.converged),
+            int(getattr(r, "nit", 0) or 0), -2.0 * float(r.llf),
+            np.sqrt(np.diag(np.asarray(r.cov_params())[:3, :3])))
 
 
 def s1(y, X, Z, codes):
     r = preml.fit_lmm_looped(y, X, Z, codes, reml=True)
-    return r["beta"], r["converged"], r["nfev"]
+    return r["beta"], r["converged"], r["nfev"], r["deviance"], None
 
 
 def s2(y, X, Z, codes):
     r = preml.fit_lmm(y, X, Z, codes, reml=True)
-    return r["beta"], r["converged"], r["nfev"]
+    return r["beta"], r["converged"], r["nfev"], r["deviance"], None
 
 
-def s3_s4(core, analytic):
+def s3_s4(y, X, Z, codes, m, analytic):
+    # The core is built inside the timed region. It used to be constructed
+    # once outside, so S3-S5 were not charged for forming the cross-products
+    # that S1 and S2 pay for on every call -- which is precisely the work the
+    # "language win" was being credited with.
+    core = LmmCore(y, X, Z, codes, m)
     bounds = [(0.0, None) if np.isfinite(v) else (None, None)
               for v in core.lower_bounds()]
     th0 = core.default_theta()
@@ -90,59 +111,117 @@ def s3_s4(core, analytic):
                        method="L-BFGS-B", bounds=bounds,
                        options={"ftol": 1e-12, "gtol": 1e-8, "maxiter": 500})
     sol = core.solution(list(res.x), True)
-    return np.asarray(sol["beta"]), bool(res.success), int(res.nfev)
+    return (np.asarray(sol["beta"]), bool(res.success), int(res.nfev),
+            float(sol["deviance"]), None)
 
 
-def s5(core):
-    sol = core.fit(core.default_theta(), True, 300, 1e-8, 1e-12)
-    return np.asarray(sol["beta"]), bool(sol["converged"]), int(sol["fev"])
-
-
-def run_case(ngroups, nper):
-    df, y, X, Z, codes, m = make(ngroups, nper)
+def s5(y, X, Z, codes, m):
     core = LmmCore(y, X, Z, codes, m)
+    sol = core.fit(core.default_theta(), True, 300, 1e-8, 1e-12)
+    return (np.asarray(sol["beta"]), bool(sol["converged"]), int(sol["fev"]),
+            float(sol["deviance"]), None)
+
+
+def s6(df):
+    """The public API on the same DataFrame S0 gets: the like-for-like row."""
+    r = mlm.mixedlm("y ~ x1 + x2", df, groups=df["g"], re_formula="~x1").fit()
+    _ = r.bse                      # statsmodels computes inference; so do we
+    return (np.asarray(r.fe_params, float), bool(r.converged),
+            int(r._res["nfev"]), -2.0 * float(r.llf),
+            np.asarray(r.bse_fe, float))
+
+
+def run_case(ngroups, nper, repeat=3):
+    df, y, X, Z, codes, m = make(ngroups, nper)
     out = {"n": ngroups * nper, "groups": ngroups}
-    out["S0"] = (*timeit(lambda: s0(df), 1),)
-    out["S1"] = (*timeit(lambda: s1(y, X, Z, codes), 1),)
-    out["S2"] = (*timeit(lambda: s2(y, X, Z, codes)),)
-    out["S3"] = (*timeit(lambda: s3_s4(core, False)),)
-    out["S4"] = (*timeit(lambda: s3_s4(core, True)),)
-    out["S5"] = (*timeit(lambda: s5(core)),)
+    # Same repeat count for every stage, including the slow ones.
+    out["S0"] = (*timeit(lambda: s0(df), repeat),)
+    out["S1"] = (*timeit(lambda: s1(y, X, Z, codes), repeat),)
+    out["S2"] = (*timeit(lambda: s2(y, X, Z, codes), repeat),)
+    out["S3"] = (*timeit(lambda: s3_s4(y, X, Z, codes, m, False), repeat),)
+    out["S4"] = (*timeit(lambda: s3_s4(y, X, Z, codes, m, True), repeat),)
+    out["S5"] = (*timeit(lambda: s5(y, X, Z, codes, m), repeat),)
+    out["S6"] = (*timeit(lambda: s6(df), repeat),)
     return out
 
 
+REPEAT = 3
+
+
 def main():
-    rows = [run_case(*c) for c in CASES]
+    rows = [run_case(*c, repeat=REPEAT) for c in CASES]
     t = lambda r, k: r[k][0]          # noqa: E731
     beta = lambda r, k: r[k][1][0]    # noqa: E731
     conv = lambda r, k: r[k][1][1]    # noqa: E731
     fev = lambda r, k: r[k][1][2]     # noqa: E731
+    dev = lambda r, k: r[k][1][3]     # noqa: E731
+    se = lambda r, k: r[k][1][4]      # noqa: E731
 
     print("\nAgreement: max |beta| difference, mixedlm-rs vs statsmodels")
     print("-" * 80)
+    bad = []
     for r in rows:
         d = np.max(np.abs(beta(r, "S4") - beta(r, "S0")))
         flag = "" if conv(r, "S0") else "   <- statsmodels did NOT converge"
         print(f"  n={r['n']:>7,d} groups={r['groups']:>6,d}   max|dbeta| = {d:.2e}{flag}")
+        # Agreement is *enforced*, not just printed: a table that reports a
+        # speedup without checking the answer can report a fast wrong answer.
+        #
+        # Coefficients are compared on the scale of their own standard errors,
+        # which is the only scale that means anything. Two optimisers stopping
+        # at slightly different points on a flat likelihood differ in the last
+        # few digits of beta and not at all in the science; an absolute
+        # threshold would flag that as a disagreement, and did.
+        errs = se(r, "S6")
+        errs = np.where(np.isfinite(errs) & (errs > 0), errs, 1.0)
+        if conv(r, "S0"):
+            in_se = np.max(np.abs(beta(r, "S4") - beta(r, "S0")) / errs)
+            if in_se > 0.05:
+                bad.append((r["n"], r["groups"], f"vs S0: {in_se:.3g} SEs"))
+        for stage in ("S1", "S2", "S3", "S5", "S6"):
+            in_se = np.max(np.abs(beta(r, stage) - beta(r, "S4")) / errs)
+            if in_se > 0.05:
+                bad.append((r["n"], r["groups"], f"{stage} vs S4: {in_se:.3g} SEs"))
+            # And the criterion itself, which is what they are optimising. Our
+            # own stages must reach the same optimum, not merely a similar
+            # answer; S6 may do better, since it alone runs the boundary escape.
+            gap = dev(r, stage) - dev(r, "S4")
+            if gap > 1e-6 * max(1.0, abs(dev(r, "S4"))):
+                bad.append((r["n"], r["groups"],
+                            f"{stage} criterion worse than S4 by {gap:.3g}"))
+    if bad:
+        raise SystemExit(f"stages disagree, refusing to report timings: {bad}")
 
-    print("\nStaged timings (seconds; best of 3, S0/S1 single run)")
-    print("-" * 108)
+    print(f"\nStaged timings (seconds; best of {REPEAT} for every stage)")
+    print("-" * 118)
     print(f"{'n':>8s} {'groups':>7s} | {'S0 sm':>9s} {'cv':>5s} | {'S1 loop':>8s} | "
-          f"{'S2 batch':>8s} | {'S3 rust':>8s} | {'S4 grad':>8s} | {'S5 rustopt':>10s} | {'S4/S0':>6s}")
-    print("-" * 108)
+          f"{'S2 batch':>8s} | {'S3 rust':>8s} | {'S4 grad':>8s} | {'S5 rustopt':>10s} | "
+          f"{'S6 public':>10s} | {'S0/S6':>6s}")
+    print("-" * 118)
     for r in rows:
         print(f"{r['n']:8,d} {r['groups']:7,d} | {t(r,'S0'):8.2f}s {str(conv(r,'S0'))[:5]:>5s} | "
               f"{t(r,'S1'):7.3f}s | {t(r,'S2'):7.3f}s | {t(r,'S3'):7.4f}s | "
-              f"{t(r,'S4'):7.4f}s | {t(r,'S5'):9.4f}s | {t(r,'S0')/t(r,'S4'):5.0f}x")
-    print("-" * 108)
+              f"{t(r,'S4'):7.4f}s | {t(r,'S5'):9.4f}s | {t(r,'S6'):9.4f}s | "
+              f"{t(r,'S0')/t(r,'S6'):5.0f}x")
+    print("-" * 118)
+    print("S0/S6 is the like-for-like end-to-end ratio: both parse a formula,")
+    print("fit, and compute inference. S1-S5 do none of that and are not")
+    print("comparable to S0 directly.")
 
-    med = lambda f: float(np.median([f(r) for r in rows]))  # noqa: E731
-    print("\nStage-to-stage multipliers (median across fixtures)")
-    print(f"  S0 -> S1   profiled REML alone           {med(lambda r: t(r,'S0')/t(r,'S1')):8.1f}x")
+    # A ratio against a fit that did not converge is meaningless, so those rows
+    # are dropped from the medians rather than quietly inflating them.
+    usable = [r for r in rows if conv(r, "S0")]
+    dropped = len(rows) - len(usable)
+    med = lambda f: float(np.median([f(r) for r in usable]))  # noqa: E731
+    print(f"\nStage-to-stage multipliers (median over the {len(usable)} "
+          f"fixtures where the baseline converged; {dropped} excluded)")
+    print(f"  S0 -> S1   profiled REML, upper bound    {med(lambda r: t(r,'S0')/t(r,'S1')):8.1f}x")
+    print("             (S0 also parses a formula and computes inference, so")
+    print("              this attributes some non-algorithmic work to profiling)")
     print(f"  S1 -> S2   + batched block Cholesky      {med(lambda r: t(r,'S1')/t(r,'S2')):8.1f}x")
     print(f"  S2 -> S3   + Rust core                   {med(lambda r: t(r,'S2')/t(r,'S3')):8.1f}x")
     print(f"  S3 -> S4   + analytic gradient           {med(lambda r: t(r,'S3')/t(r,'S4')):8.1f}x")
-    print(f"  S0 -> S4   end to end                    {med(lambda r: t(r,'S0')/t(r,'S4')):8.1f}x")
+    print(f"  S0 -> S6   end to end, like for like     {med(lambda r: t(r,'S0')/t(r,'S6')):8.1f}x")
 
     print("\nObjective evaluations -- what the analytic gradient actually buys")
     print(f"{'n':>8s} {'groups':>7s} | {'S3 numeric':>11s} | {'S4 analytic':>12s} | {'S5 in-rust':>11s}")

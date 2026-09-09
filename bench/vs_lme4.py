@@ -155,7 +155,20 @@ def report():
     if lme4_path.exists():
         for _, row in pd.read_csv(lme4_path).iterrows():
             lme4[row["name"]] = row
-    pm = time_pymer4()
+    # Read the stored pymer4 timings rather than re-running them. Re-running
+    # meant `--report` silently re-executed the whole pymer4 sweep, including
+    # the huge case that is documented as deliberately not run -- so producing
+    # the report cost hours and could quietly disagree with the table it was
+    # reporting.
+    pm = {}
+    pm_path = FIXTURES / "pymer4_results.csv"
+    if pm_path.exists():
+        for _, row in pd.read_csv(pm_path).iterrows():
+            if str(row.get("status", "")) == "ok" and np.isfinite(row["seconds"]):
+                pm[row["name"]] = float(row["seconds"])
+    else:
+        print(f"  no {pm_path.name}; run `python -u bench/time_pymer4.py` "
+              "to fill the pymer4 column")
 
     print()
     hdr = (f"{'fixture':<20s} {'n':>8s} {'groups':>8s} | {'mixedlm-rs':>11s} | "

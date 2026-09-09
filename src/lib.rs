@@ -68,14 +68,10 @@ impl LmmCore {
         // indexes. Both used to abort the process rather than raise, because
         // this crate is built with panic="abort". Refuse them at the boundary.
         if p == 0 {
-            return Err(PyValueError::new_err(
-                "X must have at least one column",
-            ));
+            return Err(PyValueError::new_err("X must have at least one column"));
         }
         if q == 0 {
-            return Err(PyValueError::new_err(
-                "Z must have at least one column",
-            ));
+            return Err(PyValueError::new_err("Z must have at least one column"));
         }
         if n == 0 {
             return Err(PyValueError::new_err("y must not be empty"));
@@ -142,7 +138,18 @@ impl LmmCore {
         }
 
         Ok(Self {
-            data: LmmData { n, p, q, m, xtx, xty, yty, ztz, ztx, zty },
+            data: LmmData {
+                n,
+                p,
+                q,
+                m,
+                xtx,
+                xty,
+                yty,
+                ztz,
+                ztx,
+                zty,
+            },
         })
     }
 
@@ -192,10 +199,12 @@ impl LmmCore {
     ) -> PyResult<(f64, Vec<f64>)> {
         self.check_theta(&theta)?;
         let nth = n_theta(self.data.q);
-        Ok(py.allow_threads(|| match evaluate(&self.data, &theta, reml, true) {
-            Some(e) => (e.deviance, e.grad),
-            None => (f64::INFINITY, vec![f64::NAN; nth]),
-        }))
+        Ok(
+            py.allow_threads(|| match evaluate(&self.data, &theta, reml, true) {
+                Some(e) => (e.deviance, e.grad),
+                None => (f64::INFINITY, vec![f64::NAN; nth]),
+            }),
+        )
     }
 
     /// Lower bounds on `theta`: diagonal entries >= 0, off-diagonals free.
@@ -241,7 +250,12 @@ impl LmmCore {
             ));
         }
         let lower = self.lower_bounds();
-        let settings = OptSettings { max_iter, gtol, ftol, memory: 10 };
+        let settings = OptSettings {
+            max_iter,
+            gtol,
+            ftol,
+            memory: 10,
+        };
 
         let best = py.allow_threads(|| {
             let mut best: Option<optim::OptResult> = None;
@@ -263,7 +277,8 @@ impl LmmCore {
             best
         });
 
-        let best = best.ok_or_else(|| PyRuntimeError::new_err("optimisation produced no result"))?;
+        let best =
+            best.ok_or_else(|| PyRuntimeError::new_err("optimisation produced no result"))?;
         self.solution_dict(py, &best.x, reml, Some(&best))
     }
 
@@ -288,9 +303,7 @@ impl LmmCore {
             )));
         }
         if let Some(pos) = theta.iter().position(|v| !v.is_finite()) {
-            return Err(PyValueError::new_err(format!(
-                "theta[{pos}] is not finite"
-            )));
+            return Err(PyValueError::new_err(format!("theta[{pos}] is not finite")));
         }
         Ok(())
     }

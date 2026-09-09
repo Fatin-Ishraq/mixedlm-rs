@@ -29,7 +29,12 @@ pub struct OptSettings {
 
 impl Default for OptSettings {
     fn default() -> Self {
-        Self { max_iter: 300, gtol: 1e-8, ftol: 1e-12, memory: 10 }
+        Self {
+            max_iter: 300,
+            gtol: 1e-8,
+            ftol: 1e-12,
+            memory: 10,
+        }
     }
 }
 
@@ -62,12 +67,7 @@ fn projected_grad_norm(x: &[f64], g: &[f64], lower: &[f64]) -> f64 {
 ///
 /// `f` returns `None` for infeasible points; the line search treats that as
 /// `+inf` and backtracks.
-pub fn minimize<F>(
-    mut f: F,
-    x0: &[f64],
-    lower: &[f64],
-    s: &OptSettings,
-) -> OptResult
+pub fn minimize<F>(mut f: F, x0: &[f64], lower: &[f64], s: &OptSettings) -> OptResult
 where
     F: FnMut(&[f64]) -> Option<(f64, Vec<f64>)>,
 {
@@ -252,7 +252,15 @@ where
         message = "projected gradient below tolerance".into();
     }
 
-    OptResult { x, fx, grad_inf_norm, iterations, fev, converged, message }
+    OptResult {
+        x,
+        fx,
+        grad_inf_norm,
+        iterations,
+        fev,
+        converged,
+        message,
+    }
 }
 
 #[inline]
@@ -278,7 +286,12 @@ mod tests {
             let v = (x[0] - 3.0).powi(2) + (x[1] + 2.0).powi(2);
             Some((v, vec![2.0 * (x[0] - 3.0), 2.0 * (x[1] + 2.0)]))
         };
-        let r = minimize(f, &[0.0, 0.0], &[f64::NEG_INFINITY; 2], &OptSettings::default());
+        let r = minimize(
+            f,
+            &[0.0, 0.0],
+            &[f64::NEG_INFINITY; 2],
+            &OptSettings::default(),
+        );
         assert!(r.converged, "{}", r.message);
         assert!((r.x[0] - 3.0).abs() < 1e-6);
         assert!((r.x[1] + 2.0).abs() < 1e-6);
@@ -291,7 +304,12 @@ mod tests {
             let v = (x[0] - 3.0).powi(2) + (x[1] + 2.0).powi(2);
             Some((v, vec![2.0 * (x[0] - 3.0), 2.0 * (x[1] + 2.0)]))
         };
-        let r = minimize(f, &[1.0, 1.0], &[f64::NEG_INFINITY, 0.0], &OptSettings::default());
+        let r = minimize(
+            f,
+            &[1.0, 1.0],
+            &[f64::NEG_INFINITY, 0.0],
+            &OptSettings::default(),
+        );
         assert!((r.x[0] - 3.0).abs() < 1e-6, "x0 = {}", r.x[0]);
         assert!(r.x[1].abs() < 1e-9, "x1 = {}", r.x[1]);
         assert!(r.converged, "{}", r.message);
@@ -308,7 +326,10 @@ mod tests {
             ];
             Some((v, g))
         };
-        let s = OptSettings { max_iter: 2000, ..Default::default() };
+        let s = OptSettings {
+            max_iter: 2000,
+            ..Default::default()
+        };
         let r = minimize(f, &[-1.2, 1.0], &[f64::NEG_INFINITY; 2], &s);
         assert!((r.x[0] - 1.0).abs() < 1e-3, "x = {:?} ({})", r.x, r.message);
         assert!((r.x[1] - 1.0).abs() < 1e-3, "x = {:?}", r.x);

@@ -4,8 +4,20 @@ Kept separate from vs_lme4.py because pymer4 is slow and fragile enough that it
 needs its own process: results are appended to CSV as each fixture finishes, so
 a hang on a later case does not discard the earlier ones. Run with `python -u`.
 
-pymer4 calls lme4 through rpy2, so its time is lme4's time plus marshalling the
-data frame across the R boundary. That overhead is the point of measuring it.
+pymer4 calls lme4 through rpy2, so what a Python user pays for an lme4 fit is
+what this measures.
+
+What this measures, and what it does not
+----------------------------------------
+This is the *end-to-end cost of fitting through pymer4*, which is the number a
+Python user actually pays. It is NOT a measurement of serialisation alone.
+`pymer4.models.lmer.fit` does more than hand `lmer` a data frame: it routes
+through lmerTest for Satterthwaite degrees of freedom, and pulls fixed effects,
+random effects, and fit statistics back across the bridge as R objects. The gap
+between this and a bare `lmer` call in R therefore covers marshalling *and*
+that extra inference, and nothing here separates the two. Attributing the whole
+difference to the bridge would need a profiler decomposition that has not been
+done.
 """
 
 import os
@@ -64,12 +76,13 @@ def main():
             print(f"  {name:<20s} n={df.height:>7,d} ...", end=" ", flush=True)
             try:
                 best, ll = float("inf"), float("nan")
-                for _ in range(REPS + 1):        # 1 warm-up, then REPS timed
+                for rep in range(REPS + 1):      # 1 warm-up, then REPS timed
                     t0 = time.perf_counter()
                     m = lmer(form, data=df)
                     m.fit(REML=reml, summarize=False)
                     dt = time.perf_counter() - t0
-                    best = min(best, dt)
+                    if rep:                      # the warm-up is not a timing
+                        best = min(best, dt)
                     try:
                         ll = float(m.result_fit_stats["log_likelihood"][0])
                     except Exception:

@@ -49,18 +49,23 @@ No. Observations:     180               Method:                           REML
 No. Groups:           18                Scale:                        654.9410
 Min. group size:      10                Log-Likelihood:              -871.8141
 Max. group size:      10                Converged:                         Yes
+Mean group size:      10.0              Singular fit:                       No
 ------------------------------------------------------------------------------
                          Coef.  Std.Err.        z    P>|z|    [0.025    0.975]
 ------------------------------------------------------------------------------
 Intercept              251.405     6.825   36.838    0.000   238.029   264.781
 Days                    10.467     1.546    6.771    0.000     7.438    13.497
-Group Var                0.935     0.464
-Group x Days Cov         0.015     0.071
-Days Var                 0.054     0.024
+Group Var              612.090    11.881
+Group x Days Cov         9.604     1.821
+Days Var                35.072     0.610
 ==============================================================================
 ```
 
-Those are `lme4`'s published numbers for this dataset, to every digit it prints.
+`lme4` reports this fit as `sd(Intercept) = 24.741`, `sd(Days) = 5.922`,
+`corr = 0.066`, `sd(Residual) = 25.592`, REML criterion `1743.6284`. Squaring
+those standard deviations gives 612.12 and 35.07, and the criterion is
+`-2 x -871.8141 = 1743.6282`. The variance rows are printed on the same scale
+statsmodels prints them, so the two summaries are directly comparable.
 
 ## Already using statsmodels?
 
@@ -127,10 +132,14 @@ is what stops people from mangling their model to silence a warning.
 
 Every row is checked for agreement before it is timed.
 
-That last row is the size from
-[statsmodels#9097](https://github.com/statsmodels/statsmodels/issues/9097),
-where a user reported waiting **41 minutes** for a fit that R's `lmer` did in
-1–2 seconds.
+That last row matches the *size* reported in
+[statsmodels#9097](https://github.com/statsmodels/statsmodels/issues/9097) —
+125,066 groups — where a user reported waiting **41 minutes** for a fit that R's
+`lmer` did in 1–2 seconds. To be clear about what that is and is not: the 41
+minutes is their report on their own data, not a measurement made here. This
+row is synthetic data at the same group count, so it shows that the size is not
+the obstacle. It is not a reproduction of their categorical-design dataset, and
+should not be read as a measured 41-minutes-to-0.18-seconds result.
 
 ### Faster than lme4 itself
 
@@ -173,17 +182,26 @@ Sherman-Morrison-Woodbury update per group per iteration. Stages 1 and 2 are
 reproducible by anyone in NumPy — `proto/preml.py` is that implementation, in
 about 200 lines. [Full tables →](docs/BENCHMARKS.md)
 
-## One thing lme4 does not do
+## The optimiser uses a gradient; lme4's does not
 
 `lme4` and `MixedModels.jl` both optimise the covariance parameters
-**derivative-free** (BOBYQA). We derive and evaluate the analytic gradient of the
-profiled criterion instead, which cuts objective evaluations from 72–148 down to
-10–12.
+**derivative-free** (BOBYQA). Here the analytic gradient of the profiled REML
+criterion is evaluated alongside the criterion itself and handed to L-BFGS-B,
+which cuts objective evaluations from 44–80 to 11–16 on the benchmark
+fixtures.
+
+Two caveats worth stating plainly. The gradient of the profiled criterion is
+not new — Bates et al. derive the ML version in the lme4 paper (eq. 46–48), and
+`MixedModels.jl` documents derivative support; what is here is a REML gradient
+specialised to the block structure, computed in the passes that already produce
+the criterion. And the 44–80 figure is *this* package's own finite-difference
+stage, not BOBYQA: no claim is made about lme4's evaluation count, which was
+not measured.
 
 Because a wrong gradient does not crash — it converges quietly to the wrong
-answer — it is checked against central finite differences across every
-combination of random-effect count, fixed-effect count, both criteria, and at
-the variance-zero boundary. [The derivation →](docs/DESIGN.md)
+answer — it is checked against central finite differences over the full product
+of random-effect count, fixed-effect count and criterion, and at the
+variance-zero boundary. [The derivation →](docs/DESIGN.md)
 
 ## What is included
 
@@ -261,5 +279,7 @@ The API mirrors `statsmodels` (BSD-3), by the statsmodels developers.
 
 The `lme4` datasets used to verify correctness (`sleepstudy`, `Dyestuff`,
 `Dyestuff2` and others) are GPL-2 and live in `data/` as **test fixtures only**.
-They are not part of the distributed package — the wheel contains nothing but
-the Python module and the compiled extension. See [data/README.md](data/README.md).
+They are excluded from both distributed artifacts — neither the wheel nor the
+source archive contains them, so nothing GPL-2 is redistributed under this
+project's MIT licence. They are present in the git repository, and the tests
+that use them skip when they are absent. See [data/README.md](data/README.md).

@@ -22,26 +22,48 @@ ncalls    tottime  cumtime  function
 iteration, where the fixed dispatch overhead of each call dwarfs its own
 arithmetic.
 
-## The four mistakes
+## Where the time actually goes
 
-**1. It optimises over everything jointly.** `statsmodels` hands the optimiser
-the fixed effects, the residual variance *and* the covariance parameters
-together — about 7 parameters for a random-slope model. `lme4` profiles the
-fixed effects and `sigma^2` out analytically, so the optimiser sees 3. This is
-the primary cause of both the speed gap and the convergence failures: a smaller,
-better-conditioned search space converges, a larger badly-scaled one reports
-`|grad| = 166`.
+An earlier version of this document claimed that `statsmodels` "optimises over
+everything jointly" -- fixed effects, residual variance and covariance
+parameters together -- and that it "recomputes constants inside the loop".
+**Both claims are false**, and its own source says so. Its module docstring
+states that the likelihood "is profiled over both the scale parameter (a
+scalar) and the fixed [effects]"; `loglike(params, profile_fe=True)` is the
+default, `score`/`score_full`/`score_sqrt` are analytic, and the per-group
+random-effect cross-products are precomputed once into `_aex_r`/`_aex_r2`.
 
-**2. Dense Sherman-Morrison-Woodbury, per group, per iteration.** `_smw_solver`
-and `_smw_logdet` apply a dense update once per group per iteration. The correct
-structure is a single Cholesky of the whole penalised system.
+So the difference is **not** profiling, and the 1.9x measured for the S0 -> S1
+step is not an isolated measurement of what profiling buys -- S0 also parses a
+formula and computes inference that S1 does not. It is reported as an upper
+bound, and labelled that way in `bench/stages.py`.
 
-**3. It ignores that the sparsity pattern is constant.** As `theta` varies, only
-the *values* of `Lambda' Z'Z Lambda + I` change — never the pattern. The
-factorisation structure can be settled once, before the optimisation starts.
+The real differences are these.
 
-**4. It recomputes constants inside the loop.** `Z'Z`, `X'X`, `X'Z`, `X'y` and
-`Z'y` do not depend on `theta` at all. Here they are formed exactly once.
+**1. Dense Sherman-Morrison-Woodbury, per group, per iteration.**
+`_smw_solver` and `_smw_logdet` apply a dense update once per group per
+iteration. With one grouping factor the penalised system
+`Lambda' Z'Z Lambda + I` is exactly block diagonal -- `m` independent `q x q`
+blocks -- so one Cholesky per block does the same work with none of the
+per-group solve. This is the largest single factor by a wide margin.
+
+**2. A Python loop over groups, in the inner loop.** The profile above shows
+276,785 calls to `numpy.linalg.solve` -- roughly one tiny call per group per
+iteration, where the fixed dispatch overhead of each call dwarfs its own
+arithmetic. Batching every step across groups removes the interpreter from the
+hot path entirely, and it is worth ~33x on its own *in NumPy*, before any Rust.
+`proto/preml.py` demonstrates exactly this, in about 200 lines.
+
+**3. A different parameterisation for the optimiser.** `statsmodels` optimises
+its own covariance entries; the criterion here is a function of the relative
+covariance factor `theta`, whose diagonal has a simple lower bound of zero.
+That makes the boundary -- where a variance component is genuinely zero -- an
+ordinary constrained optimum rather than a region the optimiser has to be
+nursed through. The analytic gradient below is in those coordinates.
+
+**4. The sparsity pattern is constant.** As `theta` varies, only the *values*
+of `Lambda' Z'Z Lambda + I` change, never the pattern, so the factorisation
+structure is settled once before the optimisation starts.
 
 ## What replaces it
 
@@ -70,8 +92,23 @@ This is worth more than anything else in the project. See BENCHMARKS.md.
 
 ### The analytic gradient
 
-`lme4` and `MixedModels.jl` both optimise `theta` derivative-free, with BOBYQA.
-We derive the gradient instead. Writing `D_k = dLambda/dtheta_k` (a single-entry
+**What is and is not new here.** The gradient of the profiled criterion is not
+a new idea, and this document should not have implied otherwise. Bates et al.
+derive the profiled ML gradient in the lme4 paper (equations 46-48), and
+`MixedModels.jl` documents derivative support of its own. What is implemented
+here is a REML gradient specialised to the single-grouping-factor block
+structure, evaluated in the same two passes that produce the criterion, at
+essentially no extra cost per evaluation.
+
+What is genuinely different is that it is *used by the optimiser*: both `lme4`
+and `MixedModels.jl` optimise `theta` derivative-free, with BOBYQA, and so pay
+a derivative-free evaluation count. Note that the comparison in BENCHMARKS.md
+is against a finite-difference L-BFGS-B (stage S3), not against BOBYQA -- so it
+measures what the analytic gradient buys *this* optimiser, not what it would
+buy lme4. No claim is made about BOBYQA's evaluation count, which was not
+measured.
+
+Writing `D_k = dLambda/dtheta_k` (a single-entry
 matrix with a 1 at `(r_k, c_k)`), `M_i = Z_i'Z_i Lambda`,
 `A_i = Lambda' Z_i'Z_i Lambda + I`, `W_i = Lambda' Z_i'X`, `B_i = A_i^-1 W_i`,
 and `P = (X'X - sum_i W_i' A_i^-1 W_i)^-1`:

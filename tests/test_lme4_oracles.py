@@ -19,6 +19,13 @@ import pytest
 
 DATA = pathlib.Path(__file__).resolve().parents[1] / "data"
 
+# The fixtures are GPL-2 and ship with the git repository only, not in the
+# wheel or the source archive (this package is MIT). Skip rather than fail when
+# running from a distribution.
+pytestmark = pytest.mark.skipif(
+    not DATA.is_dir(),
+    reason="lme4 fixtures are repository-only; clone the repo to run these")
+
 
 def load(name):
     return pd.read_csv(DATA / f"{name}.csv")

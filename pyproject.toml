@@ -38,6 +38,18 @@ test = ["pytest>=7", "statsmodels>=0.14"]
 python-source = "python"
 module-name = "mixedlm_rs._mixedlm_rs"
 features = ["pyo3/extension-module"]
+# The lme4 datasets under data/ are GPL-2 test fixtures, and this project is
+# MIT. The wheel never contained them, but the source archive did, which
+# contradicted the licensing statement in the README. Excluded from both now;
+# they live in the git repository only, and the oracle tests skip without them.
+exclude = [
+    "data/**",
+    "bench/**",
+    "proto/**",
+    ".review/**",
+    "dist/**",
+    "target/**",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

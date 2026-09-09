@@ -121,7 +121,11 @@ impl BlockLayout {
         // arithmetic is trivial and this evaluation is memory-bound, so trading
         // q*q + q*p of traffic per group for a triangular solve is a clear win.
         // A deviance-only call now never forms A^-1 at all.
-        Self { qq, qp, stride: 2 * qq + qp + q }
+        Self {
+            qq,
+            qp,
+            stride: 2 * qq + qp + q,
+        }
     }
 
     /// Split one group's slice into its four named pieces.
@@ -135,10 +139,7 @@ impl BlockLayout {
         (m_mat, l, rzx, cu)
     }
 
-    fn split_ref<'a>(
-        &self,
-        buf: &'a [f64],
-    ) -> (&'a [f64], &'a [f64], &'a [f64], &'a [f64]) {
+    fn split_ref<'a>(&self, buf: &'a [f64]) -> (&'a [f64], &'a [f64], &'a [f64], &'a [f64]) {
         let (m_mat, rest) = buf.split_at(self.qq);
         let (l, rest) = rest.split_at(self.qq);
         let (rzx, cu) = rest.split_at(self.qp);
@@ -189,7 +190,12 @@ pub fn evaluate(d: &LmmData, theta: &[f64], reml: bool, want_grad: bool) -> Opti
         .par_chunks_mut(lay.stride)
         .enumerate()
         .fold(
-            || Acc1 { ok: true, ldl2: 0.0, pp: vec![0.0; p * p], p: vec![0.0; p] },
+            || Acc1 {
+                ok: true,
+                ldl2: 0.0,
+                pp: vec![0.0; p * p],
+                p: vec![0.0; p],
+            },
             |mut acc, (i, buf)| {
                 if !acc.ok {
                     return acc;
@@ -242,7 +248,12 @@ pub fn evaluate(d: &LmmData, theta: &[f64], reml: bool, want_grad: bool) -> Opti
             },
         )
         .reduce(
-            || Acc1 { ok: true, ldl2: 0.0, pp: vec![0.0; p * p], p: vec![0.0; p] },
+            || Acc1 {
+                ok: true,
+                ldl2: 0.0,
+                pp: vec![0.0; p * p],
+                p: vec![0.0; p],
+            },
             |mut a, b| {
                 a.ok &= b.ok;
                 a.ldl2 += b.ldl2;
@@ -415,9 +426,8 @@ pub fn evaluate(d: &LmmData, theta: &[f64], reml: bool, want_grad: bool) -> Opti
     }
 
     let dfree = if reml { (n - p) as f64 } else { n as f64 };
-    let deviance = ldl2
-        + if reml { ldrx2 } else { 0.0 }
-        + dfree * (1.0 + LOG_2PI + (pwrss / dfree).ln());
+    let deviance =
+        ldl2 + if reml { ldrx2 } else { 0.0 } + dfree * (1.0 + LOG_2PI + (pwrss / dfree).ln());
 
     let mut grad = vec![0.0; nth];
     if want_grad {
