@@ -33,6 +33,7 @@ dependencies = ["numpy>=1.23", "scipy>=1.9", "pandas>=1.5", "patsy>=0.5"]
 # anyone who already wrote it; patsy is now in the base dependencies.
 formula = []
 test = ["pytest>=7", "statsmodels>=0.14"]
+lint = ["ruff>=0.6", "mypy>=1.8"]
 
 [tool.maturin]
 python-source = "python"
@@ -42,7 +43,10 @@ features = ["pyo3/extension-module"]
 # 3/3 in _install.py), so the marker is accurate. It was removed once, when the
 # count was 0/42 -- shipping it then suppressed mypy's "missing stubs" warning
 # and handed callers `Any` for everything, which is worse than no marker.
-include = [{ path = "python/mixedlm_rs/py.typed", format = "sdist" }]
+include = [
+    { path = "python/mixedlm_rs/py.typed", format = "sdist" },
+    { path = "python/mixedlm_rs/_mixedlm_rs.pyi", format = "sdist" },
+]
 # The lme4 datasets under data/ are GPL-2 test fixtures, and this project is
 # MIT. The wheel never contained them, but the source archive did, which
 # contradicted the licensing statement in the README. Excluded from both now;
@@ -59,6 +63,20 @@ exclude = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::UserWarning"]
+markers = ["slow: runs an external tool or a long sweep"]
+
+[tool.mypy]
+# Not pinned to the package's own floor of 3.10: numpy's bundled stubs use
+# `type` statements, which mypy will only parse under 3.12+, so pinning lower
+# fails inside numpy rather than in this package. The annotations here are
+# 3.10-compatible -- `from __future__ import annotations` is on every module
+# and the CI test matrix imports the package on 3.10 itself.
+python_version = "3.12"
+# pandas ships no stubs by default and pandas-stubs disagrees with pandas 3.x
+# on enough details to be noise here. numpy's own annotations are used.
+ignore_missing_imports = true
+files = ["tests/typing_usage.py"]
+strict = true
 
 [tool.ruff]
 line-length = 88

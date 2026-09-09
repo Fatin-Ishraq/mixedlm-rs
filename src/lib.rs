@@ -182,7 +182,7 @@ impl LmmCore {
     #[pyo3(signature = (theta, reml=true))]
     fn deviance(&self, py: Python<'_>, theta: Vec<f64>, reml: bool) -> PyResult<f64> {
         self.check_theta(&theta)?;
-        Ok(py.allow_threads(|| {
+        Ok(py.detach(|| {
             evaluate(&self.data, &theta, reml, false)
                 .map(|e| e.deviance)
                 .unwrap_or(f64::INFINITY)
@@ -200,7 +200,7 @@ impl LmmCore {
         self.check_theta(&theta)?;
         let nth = n_theta(self.data.q);
         Ok(
-            py.allow_threads(|| match evaluate(&self.data, &theta, reml, true) {
+            py.detach(|| match evaluate(&self.data, &theta, reml, true) {
                 Some(e) => (e.deviance, e.grad),
                 None => (f64::INFINITY, vec![f64::NAN; nth]),
             }),
@@ -257,7 +257,7 @@ impl LmmCore {
             memory: 10,
         };
 
-        let best = py.allow_threads(|| {
+        let best = py.detach(|| {
             let mut best: Option<optim::OptResult> = None;
             for chunk in starts.chunks(nth) {
                 let r = minimize(

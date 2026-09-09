@@ -21,8 +21,17 @@ jobs:
       # Lint was never actually run in CI, so "ruff clean" and "clippy clean"
       # were claims nothing checked. The ruff rule set is pinned in
       # pyproject.toml so it means the same thing here as locally.
-      - run: python -m pip install --upgrade pip ruff
+      - run: python -m pip install --upgrade pip ruff mypy maturin
       - run: python -m ruff check .
+      # py.typed claims the annotations are usable, so a checker has to agree.
+      # Counting annotated functions is not the same check and was the mistake
+      # the first time round.
+      - name: Build and install for the type checker
+        run: |
+          python -m maturin build --release --out dist
+          python -m pip install --find-links dist --no-index --no-deps mixedlm-rs
+          python -m pip install numpy scipy pandas patsy
+      - run: python -m mypy tests/typing_usage.py --strict --ignore-missing-imports
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo fmt --check
 
@@ -64,14 +73,19 @@ jobs:
           python-version: "3.10"
       - uses: dtolnay/rust-toolchain@stable
       # pyproject declares numpy>=1.23, scipy>=1.9, pandas>=1.5, patsy>=0.5.
-      # A lower bound nothing tests is a guess.
-      - name: Build and install at the declared floor
+      # These are pinned to the *exact* advertised minimum, not to the release
+      # series: "numpy==1.23.*" resolves to 1.23.5, which is not the version
+      # the metadata promises to work. If 1.23.0 does not work, the floor is
+      # wrong and should be raised rather than quietly relied upon.
+      - name: Build and install at the exact declared floor
         run: |
           python -m pip install --upgrade pip maturin
           python -m maturin build --release --out dist
           python -m pip install --find-links dist --no-index --no-deps mixedlm-rs
-          python -m pip install "numpy==1.23.*" "scipy==1.9.*" "pandas==1.5.*" \
-                                "patsy==0.5.*" pytest
+          python -m pip install "numpy==1.23.0" "scipy==1.9.0" "pandas==1.5.0" \
+                                "patsy==0.5.0" pytest
+      - name: Show what was resolved
+        run: python -m pip list | grep -Ei "numpy|scipy|pandas|patsy"
       - name: Python tests (statsmodels absent; differential tests skip)
         run: pytest tests/ -q
 
@@ -168,6 +182,30 @@ jobs:
           assert not leaked, f"GPL-2 fixtures leaked into the sdist: {leaked}"
           print(f"{path}: {len(names)} entries, no data/ directory")
           PY
+
+  audit:
+    name: dependency advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      # Both ecosystems, both on every run. An advisory that only surfaces
+      # when someone remembers to look is not a control.
+      - name: Rust advisories
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit --deny warnings
+      # Audits the *declared* dependency set, not whatever is installed
+      # alongside it. Auditing an environment reports advisories for unrelated
+      # tooling that shares the interpreter, which says nothing about this
+      # package -- see the reachability note in SECURITY.md.
+      - name: Python advisories
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          python -m pip_audit --strict --requirement requirements-runtime.txt
 
   wheels:
     name: wheels ${{ matrix.os }}

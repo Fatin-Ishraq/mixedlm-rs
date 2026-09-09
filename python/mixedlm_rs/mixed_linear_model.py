@@ -15,17 +15,14 @@ from __future__ import annotations
 
 import os
 import warnings
-from typing import TYPE_CHECKING, Any
+from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 import pandas as pd
+from numpy.typing import ArrayLike
 
 from ._fit import ConvergenceWarning, fit_core
-
-if TYPE_CHECKING:  # pragma: no cover
-    from collections.abc import Sequence
-
-    from numpy.typing import ArrayLike
 
 __all__ = [
     "ConvergenceWarning",
@@ -67,13 +64,14 @@ class MixedLMParams:
     """
 
     def __init__(self, k_fe: int, k_re: int, k_vc: int) -> None:
-        self.k_fe = int(k_fe)
-        self.k_re = int(k_re)
-        self.k_re2 = int(k_re * (k_re + 1) // 2)
-        self.k_vc = int(k_vc)
-        self.fe_params = np.zeros(self.k_fe)
-        self.cov_re = np.eye(self.k_re) if self.k_re else np.zeros((0, 0))
-        self.vcomp = np.zeros(self.k_vc)
+        self.k_fe: int = int(k_fe)
+        self.k_re: int = int(k_re)
+        self.k_re2: int = int(k_re * (k_re + 1) // 2)
+        self.k_vc: int = int(k_vc)
+        self.fe_params: np.ndarray = np.zeros(self.k_fe)
+        self.cov_re: np.ndarray = (
+            np.eye(self.k_re) if self.k_re else np.zeros((0, 0)))
+        self.vcomp: np.ndarray = np.zeros(self.k_vc)
 
     # -- construction -------------------------------------------------------
     @classmethod
@@ -528,24 +526,24 @@ class MixedLM:
                     "endog/exog/exog_re/groups contain missing or non-finite "
                     "values; pass missing='drop' to remove those rows")
 
-        self.endog = endog
-        self.exog = exog
-        self.exog_re = exog_re
-        self.exog_vc = None
-        self.groups = groups
-        self.use_sqrt = use_sqrt
+        self.endog: np.ndarray = endog
+        self.exog: np.ndarray = exog
+        self.exog_re: np.ndarray = exog_re
+        self.exog_vc: VCSpec | None = None
+        self.groups: np.ndarray = groups
+        self.use_sqrt: bool = use_sqrt
         # The criterion the model was last fitted with; loglike/score/hessian
         # default to it rather than assuming REML.
         self.reml = True
 
         self.group_labels, self._codes = _codes_from_groups(groups)
-        self.n_groups = len(self.group_labels)
+        self.n_groups: int = len(self.group_labels)
 
-        self.k_fe = exog.shape[1]
-        self.k_re = exog_re.shape[1]
-        self.k_re2 = self.k_re * (self.k_re + 1) // 2
-        self.k_vc = 0
-        self.nobs = len(endog)
+        self.k_fe: int = exog.shape[1]
+        self.k_re: int = exog_re.shape[1]
+        self.k_re2: int = self.k_re * (self.k_re + 1) // 2
+        self.k_vc: int = 0
+        self.nobs: int = len(endog)
 
         if self.exog_names is None:
             self.exog_names = [f"x{i}" for i in range(self.k_fe)]
@@ -1038,30 +1036,34 @@ class MixedLMResults:
     """Results of a :class:`MixedLM` fit."""
 
     def __init__(self, model: MixedLM, res: dict[str, Any]) -> None:
-        self.model = model
-        self._res = res
+        # Annotated one by one rather than left to inference: `res` is a
+        # dict[str, Any], so every attribute taken from it would otherwise be
+        # Any, and a checker would accept nonsense on all of them while
+        # py.typed advertised the opposite.
+        self.model: MixedLM = model
+        self._res: dict[str, Any] = res
 
-        self.fe_params = res["beta"]
-        self.cov_re = res["cov_re"]
-        self.cov_re_unscaled = res["cov_re_unscaled"]
-        self.scale = res["scale"]
-        self.vcomp = np.zeros(0)
-        self.converged = res["converged"]
-        self.singular = res["singular"]
-        self.reml = res["reml"]
-        self.nobs = res["n"]
-        self.k_fe = res["p"]
-        self.k_re = res["q"]
-        self.k_re2 = model.k_re2
-        self.k_vc = 0
-        self.method = "REML" if res["reml"] else "ML"
-        self.use_t = False
+        self.fe_params: np.ndarray = res["beta"]
+        self.cov_re: np.ndarray = res["cov_re"]
+        self.cov_re_unscaled: np.ndarray = res["cov_re_unscaled"]
+        self.scale: float = res["scale"]
+        self.vcomp: np.ndarray = np.zeros(0)
+        self.converged: bool = res["converged"]
+        self.singular: bool = res["singular"]
+        self.reml: bool = res["reml"]
+        self.nobs: int = res["n"]
+        self.k_fe: int = res["p"]
+        self.k_re: int = res["q"]
+        self.k_re2: int = model.k_re2
+        self.k_vc: int = 0
+        self.method: str = "REML" if res["reml"] else "ML"
+        self.use_t: bool = False
 
-        self._cov_beta = res["cov_beta"]
-        self._random_effects = res["random_effects"]
-        self._deviance = res["deviance"]
-        self._bse_re_unscaled = res["bse_re_unscaled"]
-        self._compute_bse_re = res.get("compute_bse_re")
+        self._cov_beta: np.ndarray = res["cov_beta"]
+        self._random_effects: np.ndarray = res["random_effects"]
+        self._deviance: float = res["deviance"]
+        self._bse_re_unscaled: np.ndarray | None = res["bse_re_unscaled"]
+        self._compute_bse_re: Any = res.get("compute_bse_re")
 
     # -- persistence --------------------------------------------------------
     #

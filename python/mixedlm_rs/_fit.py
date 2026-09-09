@@ -18,15 +18,13 @@ scipy in the loop.
 from __future__ import annotations
 
 import warnings
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.optimize import minimize
 
 from ._mixedlm_rs import LmmCore
-
-if TYPE_CHECKING:  # pragma: no cover
-    from numpy.typing import ArrayLike
 
 __all__ = ["ConvergenceWarning", "ExperimentalWarning", "fit_core"]
 
