@@ -489,10 +489,11 @@ class MixedLM:
                 UserWarning, stacklevel=2)
 
         self.reml = bool(reml)
-        # 1 by default: measured to give identical outcomes to 2 and 3
-        # across the 120 fuzz fixtures, for 27% fewer objective
-        # evaluations. See the note in _fit.fit_core.
-        n_starts = int(fit_kwargs.pop("n_starts", 1))
+        # Left to the driver, which picks per optimiser: 1 for scipy's
+        # L-BFGS-B and 5 for the in-crate one. Both are measured; see the note
+        # in _fit.fit_core.
+        n_starts = fit_kwargs.pop("n_starts", None)
+        n_starts = None if n_starts is None else int(n_starts)
         res = fit_core(self.endog, self.exog, self.exog_re, self._codes,
                        self.n_groups, reml=reml, start_params=theta0,
                        method=method, n_starts=n_starts,

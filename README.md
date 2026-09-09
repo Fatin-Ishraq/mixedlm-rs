@@ -262,11 +262,11 @@ REML and ML.
 
 A further 400-case adversarial sweep — tiny groups, extreme imbalance,
 predictors spanning six orders of magnitude, near-collinear fixed effects,
-heavy outliers — raised **zero exceptions**, failed to certify a stationary
-point **zero** times, and found a better optimum than statsmodels 131 times
-against **3 losses**. Those three are near-ties, worse by 2.7e-06, 4.9e-05 and
-1.3e-04 in deviance, and they are reported as losses rather than explained
-away. The sweep is committed as `bench/stress_sweep.py`, so the classification
+heavy outliers — raised **zero exceptions**, and found a better optimum than
+statsmodels 131 times against **3 losses**. Those three are near-ties, worse by
+2.7e-06, 5.6e-05 and 5.7e-05 in deviance on a criterion whose own scale is in
+the hundreds, and they are reported as losses rather than explained away. One
+case of 400 could not be certified as a stationary point, and says so. The sweep is committed as `bench/stress_sweep.py`, so the classification
 can be checked.
 
 Testing found real defects, and they are listed rather than quietly fixed.

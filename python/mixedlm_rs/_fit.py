@@ -228,7 +228,7 @@ def fit_core(
     reml: bool = True,
     start_params: ArrayLike | None = None,
     method: str | None = None,
-    n_starts: int = 1,
+    n_starts: int | None = None,
     maxiter: int = 500,
     gtol: float = 1e-8,
     ftol: float = 1e-12,
@@ -291,6 +291,23 @@ def fit_core(
 
     q = core.q
     use_rust = str(method).lower() == "rust"
+
+    # The number of starts is a property of the optimiser, not a taste.
+    #
+    # scipy's L-BFGS-B needs one: across the 120 randomised fuzz fixtures,
+    # n_starts of 1, 2 and 3 give identical outcomes (52 same optimum, 42
+    # better than statsmodels, 26 where the reference does not converge, 0
+    # worse) at 54.5, 59.1 and 69.4 mean objective evaluations. Extra starts
+    # changed no answer.
+    #
+    # The in-crate projected L-BFGS needs more, and this is measured too: with
+    # a single start it settles on a strictly worse *stationary* point on 2 of
+    # 20 fuzz seeds -- one of them reported as converged, which it legitimately
+    # is, being a local optimum. A weaker line search finds worse basins, and
+    # no amount of certification fixes that, because the certificate is local.
+    # Five starts recover the scipy answer on both.
+    if n_starts is None:
+        n_starts = 5 if use_rust else 1
 
     lower = np.asarray(core.lower_bounds(), float)
     bounds = [(0.0, None) if np.isfinite(v) else (None, None) for v in lower]

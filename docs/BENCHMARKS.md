@@ -255,11 +255,20 @@ Deviance-only evaluation at 125,066 groups: 8.41 ms → **7.07 ms**.
 ## An honest negative result
 
 The hand-rolled projected L-BFGS in Rust (S5) needs roughly **three times** the
-objective evaluations of scipy's L-BFGS-B (S4) — 35–64 against 10–12 — because
+objective evaluations of scipy's L-BFGS-B (S4) — 35–59 against 11–13 — because
 scipy's line search is better. S4 is therefore the default path, and the Rust
 optimiser stays available as `method="rust"` for callers who want no scipy in
 the loop. Competing with a mature Fortran line search was not where the value
 was.
+
+It is worse in a second way, found in review and worth stating: a weaker line
+search does not merely take longer to reach the same place, it settles in worse
+basins. With a single starting value it lands on a strictly worse *stationary*
+point on 2 of 20 fuzz seeds — one of them correctly reported as converged, since
+a local optimum is exactly what it is. Certification does not help, because the
+certificate is local by construction. The rust path therefore defaults to five
+starts where the scipy path takes one, which recovers the scipy answer on both
+seeds. Neither number is a guess; both are measured.
 
 ## Convergence quality
 

@@ -162,6 +162,14 @@ Unknown keyword arguments to `MixedLM(...)` and `fit(...)` raise `TypeError`.
   times as many objective evaluations and exists for callers who want no scipy
   in the loop. Both paths run the same boundary escape and the same
   stationarity certification.
+
+  They do **not** get the same number of starts, and that is deliberate. The
+  weaker line search finds worse basins: with a single start it settles on a
+  strictly worse *stationary* point on 2 of 20 fuzz seeds, one of them
+  legitimately reported as converged, because a local optimum is what it is.
+  Certification cannot fix that — the certificate is local by construction. So
+  the rust path defaults to five starts and the scipy path to one, both
+  measured. Even so, `method="rust"` is the fallback, not the recommendation.
 - **`install()` aliases only the mixed-model entry points** — `MixedLM`,
   `MixedLMResults`, `MixedLMParams` and `smf.mixedlm`. It deliberately does not
   shadow the rest of statsmodels, which does far more than mixed models and must

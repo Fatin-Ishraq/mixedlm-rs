@@ -136,7 +136,12 @@ be checked. It is committed as `bench/stress_sweep.py`; reproduce with
 | we found a strictly **better** optimum | **131** |
 | same optimum | 167 |
 | we found a **worse** optimum | 3 |
-| we failed to certify a stationary point | **0** |
+| we failed to certify a stationary point | 1 |
+
+The one case where stationarity could not be certified is reported as
+`converged=False` with the projected gradient in the message, which is the
+honest answer for a near-collinear design whose criterion is nearly flat in one
+direction. It is not silently reported as a success.
 
 **The three losses, stated rather than argued away.** An earlier version
 dismissed two of them as unidentifiable models where "the likelihood diverges",
@@ -147,8 +152,8 @@ meaningless, because the criterion carries an arbitrary additive constant:
 
 | case | shape | n | groups | deviance worse by |
 |---:|---|---:|---:|---:|
-| 100 | near-collinear | 1,035 | 72 | 4.916e-05 |
-| 214 | near-collinear | 186 | 15 | 1.279e-04 |
+| 100 | near-collinear | 1,035 | 72 | 5.619e-05 |
+| 214 | near-collinear | 186 | 15 | 5.710e-05 |
 | 282 | groups of two | 264 | 132 | 2.737e-06 |
 
 All three are near-ties on hard surfaces, on a criterion whose own scale is in
