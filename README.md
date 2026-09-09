@@ -272,7 +272,7 @@ do `fe_pen`, `cov_pen` and `free`. GLMMs are out of scope.
 ## Is it actually the same?
 
 That is the only question that matters for a drop-in, so it is what the test
-suite is built around — **505 Python tests and 7 Rust tests**.
+suite is built around — **515 Python tests and 7 Rust tests**.
 
 The primary oracle is **lme4's published fits**, not statsmodels, because
 statsmodels is the thing that is wrong on some inputs. `sleepstudy`, `Dyestuff`

@@ -52,7 +52,7 @@ First release. Linear mixed-effects models with one grouping factor, matching
 - Wheels: one `abi3` wheel per platform covering Python 3.10 through 3.14.
 
 Verified against lme4's published fits for `sleepstudy`, `Dyestuff` and the
-singular `Dyestuff2`, under both REML and ML. 505 Python tests, 7 Rust tests.
+singular `Dyestuff2`, under both REML and ML. 515 Python tests, 7 Rust tests.
 
 Not implemented, and raising rather than ignored: variance components
 (`vc_formula` / `exog_vc`), `fe_pen`, `cov_pen`, `free`, `fit_regularized`,
