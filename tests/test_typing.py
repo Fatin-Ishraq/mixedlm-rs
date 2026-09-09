@@ -74,7 +74,7 @@ def test_every_public_annotation_resolves():
     for label, fn in public_callables():
         try:
             typing.get_type_hints(fn)
-        except Exception as exc:                       # noqa: BLE001
+        except Exception as exc:
             broken.append(f"{label}: {type(exc).__name__}: {exc}")
     assert not broken, "annotations that do not resolve:\n  " + "\n  ".join(broken)
 
