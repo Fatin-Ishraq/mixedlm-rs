@@ -18,11 +18,15 @@ scipy in the loop.
 from __future__ import annotations
 
 import warnings
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from scipy.optimize import minimize
 
 from ._mixedlm_rs import LmmCore
+
+if TYPE_CHECKING:  # pragma: no cover
+    from numpy.typing import ArrayLike
 
 __all__ = ["ConvergenceWarning", "fit_core"]
 
@@ -35,7 +39,7 @@ def _theta_index(q):
     return [(r, c) for c in range(q) for r in range(c, q)]
 
 
-def theta_to_lambda(theta, q):
+def theta_to_lambda(theta: ArrayLike, q: int) -> np.ndarray:
     lam = np.zeros((q, q))
     for k, (r, c) in enumerate(_theta_index(q)):
         lam[r, c] = theta[k]
@@ -174,9 +178,21 @@ def _column_scales(Z):
     return d
 
 
-def fit_core(y, X, Z, codes, n_groups, reml=True, start_params=None,
-             method=None, n_starts=3, maxiter=500, gtol=1e-8, ftol=1e-12,
-             want_se_re=False):
+def fit_core(
+    y: ArrayLike,
+    X: ArrayLike,
+    Z: ArrayLike,
+    codes: ArrayLike,
+    n_groups: int,
+    reml: bool = True,
+    start_params: ArrayLike | None = None,
+    method: str | None = None,
+    n_starts: int = 3,
+    maxiter: int = 500,
+    gtol: float = 1e-8,
+    ftol: float = 1e-12,
+    want_se_re: bool = False,
+) -> dict[str, Any]:
     """Fit one grouping factor and return every derived quantity.
 
     Returns a plain dict; the estimator classes wrap it.

@@ -25,7 +25,7 @@ _ORIGINALS = {}
 _INSTALLED = False
 
 
-def install(strict=True):
+def install(strict: bool = True) -> bool:
     """Redirect statsmodels' mixed-model names to this package.
 
     Parameters
@@ -80,7 +80,7 @@ def install(strict=True):
     return True
 
 
-def uninstall():
+def uninstall() -> bool:
     """Put statsmodels' own implementations back."""
     global _INSTALLED
     if not _INSTALLED:
@@ -97,5 +97,5 @@ def uninstall():
     return True
 
 
-def is_installed():
+def is_installed() -> bool:
     return _INSTALLED

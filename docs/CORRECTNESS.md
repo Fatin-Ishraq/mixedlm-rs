@@ -44,6 +44,25 @@ install. Reproduced exactly:
 | | | var(Batch) | 0 (singular) | **0.0 exactly** |
 | | | sd(Residual) | 3.715684 | **3.715684** |
 
+Under **ML**, from the same R 4.6.1 + lme4 install:
+
+| dataset | quantity | lme4 | mixedlm-rs |
+|---|---|---:|---:|
+| `Dyestuff` | ML deviance | 327.327060 | **327.327060** |
+| | sd(Batch) | 37.260345 | **37.260345** |
+| | sd(Residual) | 49.510100 | **49.510100** |
+| `Dyestuff2` | ML deviance | 162.873037 | **162.873037** |
+| | sd(Batch) | 0 (singular) | **0.0 exactly** |
+| | sd(Residual) | 3.653231 | **3.653231** |
+| `sleepstudy` | ML deviance | 1751.939344 | **1751.939344** |
+| | sd(Intercept) / sd(Days) | 23.779760 / 5.716799 | **23.779760 / 5.716799** |
+| | corr | 0.081321 | **0.081321** |
+| | sd(Residual) | 25.591907 | **25.591907** |
+
+And a model shape the table did not previously cover, `Reaction ~ Days +
+(1|Subject)` under REML: criterion 1786.465085, sd(Subject) 37.123827,
+sd(Residual) 30.991234 — all reproduced.
+
 `Dyestuff2` is the important one: the optimum sits exactly on the boundary. This
 is where statsmodels emits `Random effects covariance is singular` and `The MLE
 may be on the boundary of the parameter space`. **A boundary optimum is a
@@ -54,25 +73,35 @@ p-values.
 
 ## Differential testing against statsmodels
 
-120 randomised fixtures varying group count (5–120), group size (2–30), balance,
+120 randomised fixtures varying group count (5-120), group size (2-30), balance,
 signal-to-noise, predictor scale over four orders of magnitude, the number of
-random-effect terms, and REML vs ML:
+random-effect terms, and REML vs ML. Reproduce the counts with
+`python bench/differential_table.py`; the same fixtures are asserted on by
+`pytest tests/test_fuzz.py`.
 
 | outcome | count |
 |---|---:|
 | statsmodels did not converge | **26** |
-| we found a strictly **better** optimum | **19** |
-| same optimum, parameters agree | 75 |
+| we found a strictly **better** optimum | **42** |
+| same optimum | 52 |
 | we found a **worse** optimum | **0** |
 
-On 45 of 120 fixtures — 37.5% — statsmodels either failed to converge or landed
+On 68 of 120 fixtures — 56.7% — statsmodels either failed to converge or landed
 on a worse optimum. We were never worse on any fixture.
 
-Where both converge to the same optimum, fixed effects are compared **on the
-scale of their own standard errors**, and agree to under 2% of one SE. That is
-the scale that means anything scientifically: two optimisers stopping at
-slightly different points on a flat likelihood is not a disagreement between
-implementations.
+Classification is on the **criterion**, in deviance units, which is what the two
+optimisers are competing on. Where both reach the same optimum, fixed effects
+are compared on the scale of their own standard errors, and agree to under 2% of
+one SE. That is the scale that means anything scientifically: two optimisers
+stopping at slightly different points on a flat likelihood is not a
+disagreement between implementations.
+
+Where statsmodels does **not** converge there is nothing to compare against, and
+asserting our own `converged` flag there would be circular. That branch instead
+certifies the result independently, from the deviance alone: a central
+finite-difference projected gradient, and a spread of random perturbations none
+of which may improve the criterion. Neither uses the analytic gradient or the
+convergence flag, both of which are the package's own claims.
 
 Variance-component standard errors agree with statsmodels to within 5%, and on
 `sleepstudy` to about five decimal places
@@ -80,33 +109,48 @@ Variance-component standard errors agree with statsmodels to within 5%, and on
 
 ## Adversarial stress sweep
 
-A wider sweep than the committed fuzz suite: 400 cases across six deliberately
-hostile shapes -- many groups of exactly two observations, extreme imbalance
-(one huge group among tiny ones), a handful of very large groups, predictors
-spanning six orders of magnitude, near-collinear fixed effects, and heavy
-outliers.
+400 cases across six deliberately hostile shapes — many groups of exactly two
+observations, extreme imbalance (one huge group among tiny ones), a handful of
+very large groups, predictors spanning six orders of magnitude, near-collinear
+fixed effects, and heavy outliers.
+
+This sweep used to live outside the repository, so its classifications could not
+be checked. It is committed as `bench/stress_sweep.py`; reproduce with
+`python bench/stress_sweep.py --cases 400 --seed 0`.
 
 | outcome | count |
 |---|---:|
 | we raised an exception | **0** |
-| statsmodels failed or did not converge | 71 |
-| we found a strictly better optimum | **106** |
-| same optimum | 220 |
-| we found a worse optimum | 3 |
+| statsmodels did not converge | 99 |
+| we found a strictly **better** optimum | **131** |
+| same optimum | 167 |
+| we found a **worse** optimum | 3 |
+| we failed to certify a stationary point | **0** |
 
-Of the three: two are models where `n = q * m` exactly, which are unidentifiable
-and now warn (see below) -- the likelihood diverges there rather than attaining
-a maximum, so comparing optima is meaningless. The third is a genuine near-tie
-on a near-collinear surface, differing by 8.6e-06 in relative terms.
+**The three losses, stated rather than argued away.** An earlier version
+dismissed two of them as unidentifiable models where "the likelihood diverges",
+which was wrong on the mathematics (see below) and unverifiable, since neither
+the seeds nor the script were committed. The current sweep reports each loss
+with its **absolute** deviance gap — relative tolerances on a log-likelihood are
+meaningless, because the criterion carries an arbitrary additive constant:
 
-This sweep found two defects that the narrower 120-case suite did not.
+| case | shape | n | groups | deviance worse by |
+|---:|---|---:|---:|---:|
+| 100 | near-collinear | 1,035 | 72 | 4.916e-05 |
+| 214 | near-collinear | 186 | 15 | 1.279e-04 |
+| 282 | groups of two | 264 | 132 | 2.737e-06 |
 
-**The boundary-escape ladder was too coarse.** Its smallest probe was 0.05, so a
-true optimum at `theta = 0.028` was unreachable: every probe overshot it and the
-optimiser slid back into the stationary point at zero. The ladder now reaches
-down to 1e-3.
+All three are near-ties on hard surfaces, on a criterion whose own scale is in
+the hundreds. They are losses nonetheless, and are recorded as losses.
 
-**Unidentifiable models were fitted silently.** See below.
+The sweep also reclassifies a loss as *unidentified* only when the criterion is
+**measured** to be flat along the variance split, never on a counting rule. No
+case in this run met that condition.
+
+This sweep is what found the boundary-escape ladder being too coarse: its
+smallest probe was 0.05, so a true optimum at `theta = 0.028` was unreachable —
+every probe overshot it and the optimiser slid back into the stationary point at
+zero. The ladder now reaches down to 1e-3.
 
 ## Identifiability
 
@@ -164,11 +208,36 @@ the inference around it is not.
 
 ## The analytic gradient
 
-This is the one place the project goes beyond its references, so it is the most
-heavily tested code here. Checked against central finite differences across
-`q = 1, 2, 3`, `p = 1, 2, 5, 10`, five values of `theta`, both criteria, and at
-the variance-zero boundary — 22 tests. A wrong gradient does not crash; it
-converges quietly to the wrong answer.
+A wrong gradient does not crash; it converges quietly to the wrong answer. So it
+is the most heavily tested code here: checked against central finite differences
+over the **full product** of `q = 1, 2, 3` and `p = 1, 2, 5, 10`, both criteria,
+four random feasible thetas each, plus five fixed thetas and the variance-zero
+boundary.
+
+Two things about that sweep were fixed after review. It previously varied `q`
+with `p` pinned at 2, and `p` with `q` pinned at 2, so no case with `q = 3` and
+`p = 10` was ever evaluated -- and the interaction between the two is exactly
+where a stride error in the block layout would show up. And thetas whose
+criterion came back non-finite were skipped with `continue`, silently removing
+cases from the sweep; the generator must now produce feasible points, and it is
+asserted that every generated theta was actually checked.
+
+At `theta = 0` the test asserts more than a finite deviance. Every term of the
+analytic gradient vanishes identically at `Lambda = 0`, so "the gradient is
+zero" there proves nothing on its own. The forward difference at step `h`
+measures `f'(0) + (1/2) f''(0) h`, so at a true stationary point it does not
+vanish -- it shrinks *linearly in h*. That is what is asserted: a 100x smaller
+step must give a ~100x smaller slope, which distinguishes a genuine stationary
+point from a lucky zero.
+
+**On novelty.** An earlier version of this document called the gradient "the one
+place the project goes beyond its references". That overstates it. Bates et al.
+derive the profiled ML gradient in the lme4 paper (eq. 46-48), and
+`MixedModels.jl` documents derivative support of its own. What is here is a REML
+gradient specialised to the single-grouping-factor block structure and evaluated
+in the passes that already produce the criterion. What is different in practice
+is that the optimiser *uses* it, where lme4 and MixedModels.jl both run
+derivative-free BOBYQA.
 
 ## Documented divergences from statsmodels
 
@@ -227,10 +296,19 @@ REML criterion: 161.8283      sigma: 3.715684      residual var: 13.80631
 Batch var: 0                  intercept: 5.6656    SST/(n-1): 13.80631
 ```
 
-lme4 reports **3.715684**, agreeing with this package exactly. There was no
-discrepancy -- the 3.653 figure was a misremembering, and it corresponds to
-`SST/n` rather than the REML divisor `SST/(n-1)`. The row is now in the oracle
-table above.
+lme4 reports **3.715684** for the REML fit, agreeing with this package exactly.
+
+A later check found where 3.653 actually comes from, and it is not a
+misremembering: it is the **ML** residual standard deviation for the same model.
+Running `lmer(Yield ~ 1 + (1|Batch), Dyestuff2, REML=FALSE)` gives sigma
+**3.653231**. Both numbers are real, and the difference is the divisor -- REML
+uses `n - p`, ML uses `n`, which here is 29 against 30. This package reproduces
+both, and `test_dyestuff2_ml_residual_is_the_3653_figure` pins them together so
+the confusion cannot recur.
+
+Full ML oracles for all three datasets, from the same live R install, are in the
+table above and in `tests/test_lme4_oracles.py`. Previously only `sleepstudy`'s
+ML deviance was checked.
 
 **OQ-2 — statsmodels#9097.** The issue body (41 minutes vs 1–2 seconds for
 `lmer`, 125,066 groups) and its open status were verified; the comment thread

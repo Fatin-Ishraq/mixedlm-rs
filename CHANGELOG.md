@@ -7,44 +7,137 @@ First release. Linear mixed-effects models with one grouping factor, matching
 
 - **Profiled REML/ML** in the `lme4` formulation (Bates et al. 2015): the fixed
   effects and residual variance are eliminated analytically, so the optimiser
-  sees only the 1–3 covariance parameters instead of all of them jointly.
+  sees only the 1–3 covariance parameters.
 - **Block-diagonal Cholesky.** With one grouping factor the penalised system
   decomposes into `m` independent `q x q` blocks; no general sparse solver is
-  used, and the blocks are factorised in a flat `rayon`-parallel loop.
+  used, and the blocks are factorised in a flat `rayon`-parallel loop. This is
+  the largest single contributor to the speed, by a wide margin.
 - **Analytic gradient** of the profiled criterion, which `lme4` and
   `MixedModels.jl` do not use (both optimise derivative-free with BOBYQA). Cuts
-  objective evaluations from 72–148 to 10–12, and is verified against central
-  finite differences across `q = 1..3`, `p = 1,2,5,10`, both criteria and the
+  objective evaluations from 44–80 to 11–16 against this package's own
+  finite-difference stage, and is verified against central finite differences
+  over the full product of `q = 1..3`, `p = 1,2,5,10`, both criteria, and the
   variance-zero boundary.
+- **Exact conditioning of both designs.** The random-effects columns are scaled
+  to unit RMS, and the response is offset by its OLS fit with the fixed-effect
+  columns RMS-scaled. All are exact reparameterisations — the criterion surface
+  is identical — and together they make results invariant to response
+  translation and sensible to start from whatever units the data is in.
 - **Boundary handling.** `theta = 0` is a stationary point of the profiled
   criterion for *any* data, because every gradient term vanishes at `Lambda = 0`.
   Diagonal entries landing on the bound are probed and restarted from, so a
   genuine singular fit is reported as converged while a spurious one is escaped.
-- **Exact internal rescaling** of the random-effects design to unit column RMS,
-  which leaves the criterion surface identical but makes `theta = I` a sensible
-  start whatever units the data is in.
+- **Convergence is certified by stationarity**, never by the optimiser's own
+  success flag, and the certificate drives a retry rather than annotating the
+  result. Singular fits are reported separately, via `results.singular`.
 - **Flat per-group storage.** Every intermediate for a group lives in one
   preallocated buffer rather than ~10 small `Vec`s, with rayon fold accumulators
-  instead of per-group temporaries. A single objective evaluation is 8-12x
+  instead of per-group temporaries. A single objective evaluation is 8–12x
   faster as a result, which is most of a fit.
 - **Variance-component standard errors are computed on first access**, not
   during the fit: the profiled Hessian costs `2 * n_theta` extra gradient
   evaluations and most callers only read the fixed effects.
-- **Lazy multi-start.** Extra starting values are tried only when the first fails
-  to converge; measured across 120 randomised fixtures, an unconditional 3-way
-  multi-start produced identical outcomes for 1.4x the objective evaluations.
+- **Identifiability check.** On designs where it is plausible, the fit probes
+  whether the criterion is flat along the variance split and warns if it is.
+  `lme4` refuses such models; `statsmodels` fits them silently.
 - `install()` / `uninstall()` alias only the mixed-model entry points; the rest
   of statsmodels is left untouched.
+- Hypothesis tests on the fixed effects (`t_test`, `wald_test`, `f_test`),
+  `params_object`, `df_resid`, labelled parameter views, and pickling.
 - Wheels: one `abi3` wheel per platform covering Python 3.10 through 3.14.
 
-- **Identifiability warning** when `n <= q * m`, where the residual variance and
-  the variance components cannot be separated and the profiled likelihood
-  diverges. `lme4` refuses such models; `statsmodels` fits them silently.
-
 Verified against lme4's published fits for `sleepstudy`, `Dyestuff` and the
-singular `Dyestuff2`, under both REML and ML. 222 Python tests, 7 Rust tests.
+singular `Dyestuff2`, under both REML and ML. 254 Python tests, 7 Rust tests.
 
 Not implemented, and raising rather than ignored: variance components
-(`vc_formula` / `exog_vc`), `fe_pen`, `cov_pen`, `free`, `profile_re`,
-`bootstrap`, `get_distribution`. GLMMs are out of scope. See
+(`vc_formula` / `exog_vc`), `fe_pen`, `cov_pen`, `free`, `fit_regularized`,
+`profile_re`, `bootstrap`, `get_distribution`. GLMMs are out of scope. See
 `docs/LIMITATIONS.md`.
+
+### Fixed before release, following an external review
+
+The review is worth recording, because most of these were wrong answers rather
+than missing features, and several were being reported as successes.
+
+**Numerical**
+
+- `pwrss` was computed as `y'y - beta'X'y - u'Lambda'Z'y`, a difference of large
+  nearly equal quantities. With a response around 1e8 the fit returned a
+  confidently converged wrong answer — log-likelihood off by 224, residual
+  variance off by an order of magnitude. Fixed by the OLS response offset above.
+- Convergence was `optimiser_flag or stationary`, so a loose `ftol` reported
+  success at a projected gradient of 19.
+- The stationarity tolerance keyed off the deviance, which shifts by a constant
+  under rescaling; it is now scaled by the residual degrees of freedom.
+- Boundary escape and certification ran only on the scipy path, so
+  `method="rust"` still returned false zero variances marked converged.
+- Extra starts were tried only after a reported failure, so a successful stop at
+  a worse optimum was never challenged.
+- Rank-deficient fixed effects surfaced as `RuntimeError: theta is infeasible`.
+- The identifiability rule was wrong in both directions: `n <= q*m` neither
+  implies a divergent likelihood (the criterion is *flat*) nor catches a
+  confounded single group.
+
+**Safety**
+
+- An empty, oversized or non-finite `theta`, and zero-width `X` or `Z`, reached
+  unchecked indexing in the core. Built with `panic="abort"`, that terminated
+  the host process rather than raising. All now raise `ValueError`, and
+  `tests/test_native_safety.py` checks each in a child process.
+
+**Results**
+
+- `random_effects_cov` returned the population covariance `G` for every group
+  where the conditional covariance given that group's data was asked for, and
+  every group shared one mutable frame.
+- `summary()` printed `cov_re_unscaled` under the label "Group Var": 0.935 on
+  `sleepstudy` where lme4 and statsmodels both report 612.1.
+- `bse_re` returned the packed unscaled errors rather than the reference's
+  `sqrt(scale)`-weighted ones — and the test compared against the reference's
+  `bse` tail, so it passed while the attribute was wrong.
+
+**API fidelity**
+
+- Multi-column responses (`y1 + y2 ~ x`) silently fitted the first column.
+- Missing rows were dropped independently for `endog`/`exog` and `exog_re`, and
+  not at all for `groups`, so a missing group label became a group of its own.
+- `.loc`-based alignment multiplied rows on a frame with duplicate index labels,
+  and `subset` with an external `groups` array raised a length mismatch.
+- `MixedLMParams` could not be passed to `fit`.
+- `loglike`/`score`/`hessian` always evaluated REML, rejected the covariance-only
+  packing the reference uses, and ignored `profile_fe`.
+- `predict` could not rebuild a design for new data.
+- `do_cg`, `full_output`, unknown optimiser names and unknown keyword arguments
+  were all silently ignored.
+- `VCSpec`'s positional order did not match the reference; `get_packed`
+  defaulted to including the fixed effects and raised on a singular covariance.
+- `group_list` was a property returning labels, not a method splitting an array.
+- Fitted results could not be pickled.
+- Missing: `t_test`, `wald_test`, `f_test`, `df_resid`, `params_object`.
+
+**Documentation and benchmarks**
+
+- `docs/DESIGN.md` claimed statsmodels optimises everything jointly and
+  recomputes constants in its loop. Its own docstring says the likelihood is
+  profiled over the scale and the fixed effects, its scores are analytic, and
+  its cross-products are precomputed. Rewritten.
+- The staged benchmark handed S3–S5 a pre-built core while charging S1/S2 for
+  building one, timed S0/S1 once against best-of-three for the rest, and called
+  `S0/S4` an end-to-end ratio although S0 alone parses a formula and computes
+  inference. All corrected; `S6` is the like-for-like row.
+- Benchmarks printed agreement without enforcing it. They now abort rather than
+  report timings when the criterion or the coefficients disagree.
+- The gradient was described as going beyond both references; Bates et al.
+  derive the profiled ML gradient in the lme4 paper. Corrected.
+- pymer4's overhead was attributed entirely to rpy2 marshalling, although its
+  fit also routes through lmerTest.
+- The 400-case adversarial sweep was not committed and dismissed two of its
+  three losses using the incorrect divergence argument. It is now
+  `bench/stress_sweep.py`, and every loss is reported with its absolute
+  deviance gap.
+- The source archive shipped the GPL-2 lme4 fixtures while the README said the
+  fixtures are not distributed. Excluded from both artifacts.
+- `patsy` was an optional extra although the documented first example needs it.
+- CI never ran lint, covered 3 of the 5 declared Python versions, and did not
+  test the declared dependency floor, the MSRV, the sdist contents or a clean
+  install.

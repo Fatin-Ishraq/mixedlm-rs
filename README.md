@@ -110,11 +110,16 @@ Across **120 randomised fixtures**, comparing against `statsmodels`:
 | outcome | count |
 |---|---:|
 | statsmodels did not converge | **26** |
-| mixedlm-rs found a strictly **better** optimum | **19** |
-| same optimum | 75 |
+| mixedlm-rs found a strictly **better** optimum | **42** |
+| same optimum | 52 |
 | mixedlm-rs found a **worse** optimum | **0** |
 
-On 37.5% of fixtures the reference either failed or landed somewhere worse.
+On 56.7% of fixtures the reference either failed or landed somewhere worse.
+Reproduce the counts with `python bench/differential_table.py`.
+
+These are deliberately difficult fixtures — that is what they are for — so the
+rate is not an estimate of how often statsmodels fails on ordinary published
+datasets, and should not be read as one.
 
 Singular fits — a variance component genuinely at zero — are reported as
 converged, because a boundary optimum **is** a converged fit. That distinction
@@ -208,7 +213,9 @@ variance-zero boundary. [The derivation →](docs/DESIGN.md)
 | | |
 |---|---|
 | **Models** | `MixedLM`, `MixedLM.from_formula`, `mixedlm` |
-| **Results** | `fe_params`, `cov_re`, `cov_re_unscaled`, `scale`, `params`, `bse`, `bse_fe`, `bse_re`, `tvalues`, `pvalues`, `llf`, `aic`, `bic`, `random_effects`, `random_effects_cov`, `fittedvalues`, `resid`, `conf_int`, `cov_params`, `predict`, `summary` |
+| **Results** | `fe_params`, `cov_re`, `cov_re_unscaled`, `scale`, `params`, `bse`, `bse_fe`, `bse_re`, `bse_cov_re`, `tvalues`, `pvalues`, `llf`, `aic`, `bic`, `df_resid`, `random_effects`, `random_effects_cov`, `fittedvalues`, `resid`, `conf_int`, `cov_params`, `predict`, `summary`, `converged`, `singular` |
+| **Tests** | `t_test`, `wald_test`, `f_test` (fixed effects) |
+| **Persistence** | pickling, `save` / `load` |
 | **Parameters** | `MixedLMParams` with `from_packed` / `get_packed` / `from_components` |
 | **Criteria** | REML (default) and ML |
 | **Aliasing** | `install()` / `uninstall()` |
@@ -223,7 +230,7 @@ do `fe_pen`, `cov_pen` and `free`. GLMMs are out of scope.
 ## Is it actually the same?
 
 That is the only question that matters for a drop-in, so it is what the test
-suite is built around — **222 Python tests and 7 Rust tests**.
+suite is built around — **254 Python tests and 7 Rust tests**.
 
 The primary oracle is **lme4's published fits**, not statsmodels, because
 statsmodels is the thing that is wrong on some inputs. `sleepstudy`, `Dyestuff`
@@ -232,11 +239,15 @@ REML and ML.
 
 A further 400-case adversarial sweep — tiny groups, extreme imbalance,
 predictors spanning six orders of magnitude, near-collinear fixed effects,
-heavy outliers — raised **zero exceptions**, and found a better optimum than
-statsmodels 106 times against 3 losses, all of which are ties or unidentifiable
-models.
+heavy outliers — raised **zero exceptions**, failed to certify a stationary
+point **zero** times, and found a better optimum than statsmodels 131 times
+against **3 losses**. Those three are near-ties, worse by 2.7e-06, 4.9e-05 and
+1.3e-04 in deviance, and they are reported as losses rather than explained
+away. The sweep is committed as `bench/stress_sweep.py`, so the classification
+can be checked.
 
-Differential testing found four real defects during development:
+Testing found real defects, and they are listed rather than quietly fixed.
+Differential testing against statsmodels found four during development:
 
 - **`fittedvalues` returned the marginal fit.** statsmodels' is the *conditional*
   fit, including the random effects.
@@ -247,9 +258,33 @@ Differential testing found four real defects during development:
   and restarting.
 - **That probe ladder was then too coarse.** Its smallest step was 0.05, so a
   true optimum at `theta = 0.028` was still missed — every probe overshot it.
-- **Unidentifiable models were fitted silently.** With `n <= q * m` the
-  likelihood diverges rather than attaining a maximum; `lme4` refuses these
-  outright, and we now warn.
+- **Unidentifiable models were fitted silently.** Now detected — though the
+  original reasoning for the check was itself wrong, and the correction is
+  below.
+
+An external review then found several more, which are fixed and documented:
+
+- **Catastrophic cancellation in the residual sum of squares.** The criterion
+  was computed as `y'y - beta'X'y - u'Lambda'Z'y`, a difference of large nearly
+  equal quantities. With a response around 1e8 — prices in minor units, epoch
+  timestamps, populations — the fit returned a confidently converged wrong
+  answer. The response is now offset by its OLS fit before any cross-product is
+  formed, which makes results invariant to response translation.
+- **Convergence was `optimiser_flag or stationary`.** A loose tolerance let the
+  optimiser's own success flag overrule the gradient check, reporting success
+  at a projected gradient of 19. Stationarity is now the only test, and it
+  drives a retry rather than just annotating the answer.
+- **`summary()` printed the wrong quantity.** It labelled `cov_re_unscaled` as
+  "Group Var" — 0.935 on `sleepstudy` where both lme4 and statsmodels report
+  612.1.
+- **`random_effects_cov` returned the population covariance** for every group,
+  where the conditional covariance given that group's data was asked for.
+- **Malformed input to the compiled core killed the process.** An empty or
+  oversized `theta` reached unchecked indexing, and `panic="abort"` turned that
+  into a process abort rather than a catchable error.
+- **The identifiability rule was wrong in both directions.** `n <= q*m` neither
+  implies a divergent likelihood nor catches a confounded single group. The
+  check now measures whether the criterion is flat instead of counting.
 
 [What is verified, and every divergence →](docs/CORRECTNESS.md)
 

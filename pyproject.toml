@@ -38,6 +38,11 @@ test = ["pytest>=7", "statsmodels>=0.14"]
 python-source = "python"
 module-name = "mixedlm_rs._mixedlm_rs"
 features = ["pyo3/extension-module"]
+# The public API is fully annotated (70/70 functions in mixed_linear_model.py,
+# 3/3 in _install.py), so the marker is accurate. It was removed once, when the
+# count was 0/42 -- shipping it then suppressed mypy's "missing stubs" warning
+# and handed callers `Any` for everything, which is worse than no marker.
+include = [{ path = "python/mixedlm_rs/py.typed", format = "sdist" }]
 # The lme4 datasets under data/ are GPL-2 test fixtures, and this project is
 # MIT. The wheel never contained them, but the source archive did, which
 # contradicted the licensing statement in the README. Excluded from both now;

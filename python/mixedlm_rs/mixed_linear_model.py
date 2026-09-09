@@ -13,12 +13,19 @@ wrong rather than merely different; every such case is documented in
 
 from __future__ import annotations
 
+import os
 import warnings
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 
 from ._fit import ConvergenceWarning, fit_core
+
+if TYPE_CHECKING:  # pragma: no cover
+    from collections.abc import Sequence
+
+    from numpy.typing import ArrayLike
 
 __all__ = [
     "ConvergenceWarning",
@@ -38,7 +45,12 @@ class VCSpec:
     raises ``NotImplementedError`` rather than silently fitting a different model.
     """
 
-    def __init__(self, names, colnames, mats):
+    def __init__(
+        self,
+        names: Sequence[str],
+        colnames: Sequence[Sequence[str]],
+        mats: Sequence[ArrayLike],
+    ) -> None:
         # Positional order follows statsmodels exactly -- (names, colnames,
         # mats). This once read (names, mats, colnames), which silently swapped
         # two of the three arguments for anyone constructing one positionally.
@@ -54,7 +66,7 @@ class MixedLMParams:
     ``vech_row`` walks the lower triangle by rows: (0,0), (1,0), (1,1), ...
     """
 
-    def __init__(self, k_fe, k_re, k_vc):
+    def __init__(self, k_fe: int, k_re: int, k_vc: int) -> None:
         self.k_fe = int(k_fe)
         self.k_re = int(k_re)
         self.k_re2 = int(k_re * (k_re + 1) // 2)
@@ -65,8 +77,13 @@ class MixedLMParams:
 
     # -- construction -------------------------------------------------------
     @classmethod
-    def from_components(cls, fe_params=None, cov_re=None, cov_re_sqrt=None,
-                        vcomp=None):
+    def from_components(
+        cls,
+        fe_params: ArrayLike | None = None,
+        cov_re: ArrayLike | None = None,
+        cov_re_sqrt: ArrayLike | None = None,
+        vcomp: ArrayLike | None = None,
+    ) -> MixedLMParams:
         if cov_re is None and cov_re_sqrt is not None:
             cov_re = np.asarray(cov_re_sqrt) @ np.asarray(cov_re_sqrt).T
         fe_params = np.zeros(0) if fe_params is None else np.asarray(fe_params, float)
@@ -79,7 +96,14 @@ class MixedLMParams:
         return obj
 
     @classmethod
-    def from_packed(cls, params, k_fe, k_re, use_sqrt=True, has_fe=True):
+    def from_packed(
+        cls,
+        params: ArrayLike,
+        k_fe: int,
+        k_re: int,
+        use_sqrt: bool = True,
+        has_fe: bool = True,
+    ) -> MixedLMParams:
         params = np.asarray(params, float)
         k_re2 = k_re * (k_re + 1) // 2
         i = 0
@@ -104,7 +128,8 @@ class MixedLMParams:
         vcomp = np.asarray(vcomp, float) ** 2 if use_sqrt else np.asarray(vcomp, float)
         return cls.from_components(fe_params=fe, cov_re=cov, vcomp=vcomp)
 
-    def get_packed(self, use_sqrt=True, has_fe=False):
+    def get_packed(self, use_sqrt: bool = True,
+                   has_fe: bool = False) -> np.ndarray:
         """Pack into statsmodels' layout.
 
         ``has_fe`` defaults to False, as in the reference: the packed vector the
@@ -133,7 +158,7 @@ class MixedLMParams:
         parts.append(vcomp)
         return np.concatenate(parts) if parts else np.zeros(0)
 
-    def copy(self):
+    def copy(self) -> MixedLMParams:
         return MixedLMParams.from_components(
             fe_params=self.fe_params.copy(),
             cov_re=self.cov_re.copy(),
@@ -160,7 +185,7 @@ def _designs(formula, re_formula, data, missing, eval_env):
     """
     from patsy import PatsyError, dmatrices, dmatrix
 
-    def build(frame, na_action):
+    def build(frame: pd.DataFrame, na_action: str) -> tuple:
         y, X = dmatrices(formula, frame, return_type="matrix",
                          NA_action=na_action, eval_env=eval_env)
         if y.shape[1] != 1:
@@ -245,8 +270,17 @@ class MixedLM:
     Parameters mirror ``statsmodels.regression.mixed_linear_model.MixedLM``.
     """
 
-    def __init__(self, endog, exog, groups, exog_re=None, exog_vc=None,
-                 use_sqrt=True, missing="none", **kwargs):
+    def __init__(
+        self,
+        endog: ArrayLike,
+        exog: ArrayLike,
+        groups: ArrayLike,
+        exog_re: ArrayLike | None = None,
+        exog_vc: VCSpec | None = None,
+        use_sqrt: bool = True,
+        missing: str = "none",
+        **kwargs: Any,
+    ) -> None:
         if exog_vc is not None:
             raise NotImplementedError(
                 "variance components (exog_vc / vc_formula) are not implemented "
@@ -335,9 +369,18 @@ class MixedLM:
 
     # -- construction -------------------------------------------------------
     @classmethod
-    def from_formula(cls, formula, data, re_formula=None, vc_formula=None,
-                     subset=None, use_sparse=False, missing="none",
-                     *args, **kwargs):
+    def from_formula(
+        cls,
+        formula: str,
+        data: pd.DataFrame,
+        re_formula: str | None = None,
+        vc_formula: Any = None,
+        subset: ArrayLike | None = None,
+        use_sparse: bool = False,
+        missing: str = "none",
+        *args: Any,
+        **kwargs: Any,
+    ) -> MixedLM:
         if vc_formula is not None:
             raise NotImplementedError(
                 "vc_formula (variance components) is not implemented in this "
@@ -392,9 +435,19 @@ class MixedLM:
                    _data_frame=data, **kwargs)
 
     # -- fitting ------------------------------------------------------------
-    def fit(self, start_params=None, reml=True, niter_sa=0, do_cg=True,
-            fe_pen=None, cov_pen=None, free=None, full_output=False,
-            method=None, **fit_kwargs):
+    def fit(
+        self,
+        start_params: MixedLMParams | ArrayLike | None = None,
+        reml: bool = True,
+        niter_sa: int = 0,
+        do_cg: bool = True,
+        fe_pen: Any = None,
+        cov_pen: Any = None,
+        free: Any = None,
+        full_output: bool = False,
+        method: str | None = None,
+        **fit_kwargs: Any,
+    ) -> MixedLMResults:
         for name, val in (("fe_pen", fe_pen), ("cov_pen", cov_pen), ("free", free)):
             if val is not None:
                 raise NotImplementedError(
@@ -503,7 +556,8 @@ class MixedLM:
         return _vech_col(fac)
 
     # -- likelihood surface (for compatibility and testing) -----------------
-    def loglike(self, params, profile_fe=True, reml=None):
+    def loglike(self, params: MixedLMParams | ArrayLike,
+                profile_fe: bool = True, reml: bool | None = None) -> float:
         """Profiled log-likelihood at a packed parameter vector.
 
         ``params`` may be a :class:`MixedLMParams`, a covariance-only packed
@@ -550,7 +604,9 @@ class MixedLM:
             raise ValueError("params must not be None")
         return theta
 
-    def predict(self, params, exog=None, transform=True):
+    def predict(self, params: MixedLMParams | ArrayLike,
+                exog: ArrayLike | pd.DataFrame | None = None,
+                transform: bool = True) -> np.ndarray:
         """Marginal prediction ``X beta``, matching the reference.
 
         With a formula-fitted model and ``transform=True``, ``exog`` may be a
@@ -581,13 +637,15 @@ class MixedLM:
         return X @ fe
 
     @property
-    def endog_names(self):
+    def endog_names(self) -> str:
         return self._endog_name
 
-    def initialize(self):
+    def initialize(self) -> None:
         return None
 
-    def score(self, params, profile_fe=True, reml=None):
+    def score(self, params: MixedLMParams | ArrayLike,
+              profile_fe: bool = True,
+              reml: bool | None = None) -> np.ndarray:
         """Gradient of :meth:`loglike`, in the internal ``theta`` coordinates.
 
         These are the entries of the relative covariance factor, not
@@ -604,7 +662,8 @@ class MixedLM:
         _, g = self._core().deviance_grad(list(theta), self._reml_flag(reml))
         return -0.5 * np.asarray(g, float)
 
-    def hessian(self, params, reml=None):
+    def hessian(self, params: MixedLMParams | ArrayLike,
+                reml: bool | None = None) -> np.ndarray:
         """Hessian of :meth:`loglike` in the internal ``theta`` coordinates.
 
         Shape is ``(k_re2, k_re2)`` -- the profiled criterion has no fixed-effect
@@ -617,7 +676,8 @@ class MixedLM:
         return -0.5 * _profiled_hessian(self._core(), theta,
                                         self._reml_flag(reml))
 
-    def information(self, params, reml=None):
+    def information(self, params: MixedLMParams | ArrayLike,
+                    reml: bool | None = None) -> np.ndarray:
         return -self.hessian(params, reml=reml)
 
     # -- persistence --------------------------------------------------------
@@ -640,24 +700,40 @@ class MixedLM:
     def __setstate__(self, state):
         self.__dict__.update(state)
 
-    def fit_regularized(self, *args, **kwargs):
+    def fit_regularized(self, *args: Any, **kwargs: Any) -> MixedLMResults:
         raise NotImplementedError(
             "fit_regularized (L1-penalised fixed effects) is not implemented "
             "in this release; see docs/LIMITATIONS.md. Refusing rather than "
             "silently fitting the unpenalised model.")
 
-    def get_distribution(self, *args, **kwargs):
+    def get_distribution(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError(
             "get_distribution is not implemented in this release; see "
             "docs/LIMITATIONS.md.")
 
-    def get_scale(self, fe_params=None, cov_re=None, vcomp=None):
+    def get_scale(self, fe_params: ArrayLike | None = None,
+                  cov_re: ArrayLike | None = None,
+                  vcomp: ArrayLike | None = None) -> float:
         raise NotImplementedError(
             "get_scale is an internal statsmodels helper tied to its "
             "parameterisation; use MixedLMResults.scale instead."
         )
 
-    def group_list(self, array):
+    @property
+    def data(self) -> _ModelData:
+        """Minimal stand-in for statsmodels' model data namespace.
+
+        Code that reaches for ``model.data.xnames`` or ``exog_re_names`` to
+        label output is common enough that its absence breaks otherwise
+        portable plotting and reporting helpers.
+        """
+        return _ModelData(self)
+
+    @property
+    def exog_re_names(self) -> list[str]:
+        return list(self._exog_re_names)
+
+    def group_list(self, array: ArrayLike) -> list[np.ndarray]:
         """Split ``array`` by group, as the reference does.
 
         This was a list-valued property returning the labels, which is a
@@ -668,12 +744,46 @@ class MixedLM:
         return [arr[self._codes == i] for i in range(self.n_groups)]
 
     @property
-    def df_resid(self):
+    def df_resid(self) -> int:
         return self.nobs - self.k_fe
 
     @property
-    def df_modelwc(self):
+    def df_modelwc(self) -> int:
         return self.k_fe + self.k_re2 + self.k_vc
+
+
+class _ModelData:
+    """The subset of statsmodels' `model.data` that labelling code actually uses."""
+
+    __slots__ = ("_model",)
+
+    def __init__(self, model: MixedLM) -> None:
+        self._model = model
+
+    @property
+    def xnames(self) -> list[str]:
+        return list(self._model.exog_names)
+
+    @property
+    def ynames(self) -> str:
+        return self._model.endog_names
+
+    @property
+    def exog_re_names(self) -> list[str]:
+        return list(self._model._exog_re_names)
+
+    @property
+    def param_names(self) -> list[str]:
+        return (list(self._model.exog_names)
+                + _re_param_names(list(self._model._exog_re_names)))
+
+    @property
+    def endog(self) -> np.ndarray:
+        return self._model.endog
+
+    @property
+    def exog(self) -> np.ndarray:
+        return self._model.exog
 
 
 def _vech_col(mat):
@@ -685,7 +795,7 @@ def _vech_col(mat):
 class MixedLMResults:
     """Results of a :class:`MixedLM` fit."""
 
-    def __init__(self, model, res):
+    def __init__(self, model: MixedLM, res: dict[str, Any]) -> None:
         self.model = model
         self._res = res
 
@@ -733,14 +843,14 @@ class MixedLMResults:
     def __setstate__(self, state):
         self.__dict__.update(state)
 
-    def save(self, path):
+    def save(self, path: str | os.PathLike[str]) -> None:
         """Pickle this result to ``path``."""
         import pickle
         with open(path, "wb") as fh:
             pickle.dump(self, fh)
 
     @classmethod
-    def load(cls, path):
+    def load(cls, path: str | os.PathLike[str]) -> MixedLMResults:
         """Load a result written by :meth:`save`."""
         import pickle
         with open(path, "rb") as fh:
@@ -748,16 +858,16 @@ class MixedLMResults:
 
     # -- parameter vector, statsmodels packing ------------------------------
     @property
-    def params(self):
+    def params(self) -> np.ndarray:
         return np.concatenate([self.fe_params, _vech_row(self.cov_re_unscaled),
                                self.vcomp])
 
     @property
-    def bse_fe(self):
+    def bse_fe(self) -> np.ndarray:
         return np.sqrt(np.diag(self._cov_beta))
 
     @property
-    def _bse_re_packed(self):
+    def _bse_re_packed(self) -> np.ndarray:
         """Standard errors of the *unscaled* covariance parameters.
 
         This is what goes in the tail of ``params`` and ``bse``, matching the
@@ -774,7 +884,7 @@ class MixedLMResults:
         return _vech_row(m)
 
     @property
-    def bse_re(self):
+    def bse_re(self) -> np.ndarray:
         """Standard errors of the variance parameters, as the reference defines them.
 
         statsmodels computes ``sqrt(scale * diag(cov_params())[k_fe:])``, i.e.
@@ -797,7 +907,7 @@ class MixedLMResults:
         return np.sqrt(self.scale) * self._bse_re_packed
 
     @property
-    def bse_cov_re(self):
+    def bse_cov_re(self) -> np.ndarray:
         """Standard errors on the same scale as :attr:`cov_re`.
 
         Not a statsmodels attribute. ``cov_re = scale * cov_re_unscaled``, so
@@ -807,7 +917,7 @@ class MixedLMResults:
         return self.scale * self._bse_re_packed
 
     @property
-    def bse(self):
+    def bse(self) -> np.ndarray:
         """Standard errors of the packed parameter vector.
 
         The tail is on the unscaled covariance parameterisation, matching
@@ -816,39 +926,39 @@ class MixedLMResults:
         return np.concatenate([self.bse_fe, self._bse_re_packed])
 
     @property
-    def tvalues(self):
+    def tvalues(self) -> np.ndarray:
         with np.errstate(invalid="ignore", divide="ignore"):
             return self.params / self.bse
 
     @property
-    def pvalues(self):
+    def pvalues(self) -> np.ndarray:
         from scipy import stats
         with np.errstate(invalid="ignore", divide="ignore"):
             return 2 * stats.norm.sf(np.abs(self.tvalues))
 
     @property
-    def llf(self):
+    def llf(self) -> float:
         return -0.5 * self._deviance
 
     @property
-    def df_modelwc(self):
+    def df_modelwc(self) -> int:
         return self.k_fe + self.k_re2 + self.k_vc
 
     @property
-    def aic(self):
+    def aic(self) -> float:
         if self.reml:
             return np.nan
         return -2 * (self.llf - (self.params.size + 1))
 
     @property
-    def bic(self):
+    def bic(self) -> float:
         if self.reml:
             return np.nan
         df = self.params.size + 1
         return -2 * self.llf + np.log(self.nobs) * df
 
     @property
-    def fittedvalues(self):
+    def fittedvalues(self) -> np.ndarray:
         """Conditional fit: X*beta + Z*b, including the random effects.
 
         This matches statsmodels, whose ``fittedvalues`` adds each group's
@@ -862,18 +972,18 @@ class MixedLMResults:
         return fit
 
     @property
-    def resid(self):
+    def resid(self) -> np.ndarray:
         return self.model.endog - self.fittedvalues
 
     @property
-    def random_effects(self):
+    def random_effects(self) -> dict[Any, pd.Series]:
         """Conditional modes, one entry per group, as statsmodels returns them."""
         names = self.model._exog_re_names
         return {lab: pd.Series(self._random_effects[i], index=names)
                 for i, lab in enumerate(self.model.group_labels)}
 
     @property
-    def random_effects_cov(self):
+    def random_effects_cov(self) -> dict[Any, pd.DataFrame]:
         """Conditional covariance of each group's random effects, given the data.
 
         This is *not* the population covariance ``cov_re``: it is
@@ -919,7 +1029,8 @@ class MixedLMResults:
         return {lab: pd.DataFrame(covs[i], index=names, columns=names)
                 for i, lab in enumerate(self.model.group_labels)}
 
-    def conf_int(self, alpha=0.05, cols=None):
+    def conf_int(self, alpha: float = 0.05,
+                 cols: ArrayLike | None = None) -> np.ndarray:
         from scipy import stats
         z = stats.norm.ppf(1 - alpha / 2)
         lo = self.params - z * self.bse
@@ -927,7 +1038,10 @@ class MixedLMResults:
         out = np.column_stack([lo, hi])
         return out if cols is None else out[cols]
 
-    def cov_params(self, r_matrix=None, column=None, scale=None, cov_p=None):
+    def cov_params(self, r_matrix: ArrayLike | None = None,
+                   column: ArrayLike | None = None,
+                   scale: float | None = None,
+                   cov_p: ArrayLike | None = None) -> np.ndarray:
         """Covariance of the packed parameter vector.
 
         The fixed-effect block is the GLS covariance
@@ -991,7 +1105,8 @@ class MixedLMResults:
                 "right-hand-side column")
         return R, qv
 
-    def t_test(self, r_matrix, use_t=None):
+    def t_test(self, r_matrix: str | ArrayLike,
+               use_t: bool | None = None) -> Any:
         """Wald test of ``R beta = q`` on the fixed effects, term by term."""
         from scipy import stats
         R, qv = self._fe_contrast(r_matrix)
@@ -1006,7 +1121,8 @@ class MixedLMResults:
             pv = 2 * stats.norm.sf(np.abs(stat))
         return _ContrastResults(eff, se, stat, pv, use_t, self.df_resid)
 
-    def wald_test(self, r_matrix, use_f=False, scalar=True):
+    def wald_test(self, r_matrix: str | ArrayLike, use_f: bool = False,
+                  scalar: bool = True) -> Any:
         """Joint Wald test of ``R beta = q`` on the fixed effects."""
         from scipy import stats
         R, qv = self._fe_contrast(r_matrix)
@@ -1023,29 +1139,29 @@ class MixedLMResults:
                                 float(stats.chi2.sf(stat, df)),
                                 False, self.df_resid, df_num=df)
 
-    def f_test(self, r_matrix):
+    def f_test(self, r_matrix: str | ArrayLike) -> Any:
         """Joint F test of ``R beta = q`` on the fixed effects."""
         return self.wald_test(r_matrix, use_f=True)
 
     # -- labelled views -----------------------------------------------------
     @property
-    def param_names(self):
+    def param_names(self) -> list[str]:
         """Names for every entry of :attr:`params`."""
         return (list(self.model.exog_names)
                 + _re_param_names(list(self.model._exog_re_names)))
 
     @property
-    def fe_params_labelled(self):
+    def fe_params_labelled(self) -> pd.Series:
         """:attr:`fe_params` as a named Series, for name-based access."""
         return pd.Series(self.fe_params, index=list(self.model.exog_names))
 
     @property
-    def params_labelled(self):
+    def params_labelled(self) -> pd.Series:
         """:attr:`params` as a named Series."""
         return pd.Series(self.params, index=self.param_names)
 
     @property
-    def params_object(self):
+    def params_object(self) -> MixedLMParams:
         """The fit as a :class:`MixedLMParams`, as the reference exposes it."""
         return MixedLMParams.from_components(
             fe_params=np.asarray(self.fe_params, float),
@@ -1053,15 +1169,22 @@ class MixedLMResults:
             vcomp=np.asarray(self.vcomp, float))
 
     @property
-    def df_resid(self):
+    def df_resid(self) -> int:
         return self.nobs - self.k_fe
 
-    def predict(self, exog=None, transform=True):
+    def predict(self, exog: ArrayLike | pd.DataFrame | None = None,
+                transform: bool = True) -> np.ndarray:
         return self.model.predict(self.params, exog=exog, transform=transform)
 
     # -- reporting ----------------------------------------------------------
-    def summary(self, yname=None, xname_fe=None, xname_re=None, title=None,
-                alpha=0.05):
+    def summary(
+        self,
+        yname: str | None = None,
+        xname_fe: Sequence[str] | None = None,
+        xname_re: Sequence[str] | None = None,
+        title: str | None = None,
+        alpha: float = 0.05,
+    ) -> Any:
         from scipy import stats
         z = stats.norm.ppf(1 - alpha / 2)
         fe_names = list(xname_fe or self.model.exog_names)
@@ -1132,17 +1255,17 @@ class MixedLMResults:
         return str(self.summary())
 
     # -- explicitly unimplemented -------------------------------------------
-    def profile_re(self, *args, **kwargs):
+    def profile_re(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError(
             "profile_re is not implemented in this release; see docs/LIMITATIONS.md"
         )
 
-    def bootstrap(self, *args, **kwargs):
+    def bootstrap(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError(
             "bootstrap is not implemented in this release; see docs/LIMITATIONS.md"
         )
 
-    def get_distribution(self, *args, **kwargs):
+    def get_distribution(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError(
             "get_distribution is not implemented in this release; "
             "see docs/LIMITATIONS.md"
@@ -1191,8 +1314,9 @@ def _parse_constraints(spec, names):
 class _ContrastResults:
     """Minimal stand-in for statsmodels' ContrastResults."""
 
-    def __init__(self, effect, sd, statistic, pvalue, use_t, df_denom,
-                 df_num=None):
+    def __init__(self, effect: ArrayLike, sd: ArrayLike | None,
+                 statistic: Any, pvalue: Any, use_t: bool, df_denom: int,
+                 df_num: int | None = None) -> None:
         self.effect = np.atleast_1d(effect)
         self.sd = sd
         self.statistic = statistic
@@ -1203,7 +1327,7 @@ class _ContrastResults:
         self.tvalue = statistic
         self.fvalue = statistic if (use_t and df_num is not None) else None
 
-    def summary(self):
+    def summary(self) -> str:
         return str(self)
 
     def __str__(self):
@@ -1219,7 +1343,7 @@ class _ContrastResults:
 
 
 class _SummaryText:
-    def __init__(self, text):
+    def __init__(self, text: str) -> None:
         self._text = text
 
     def __str__(self):
@@ -1228,12 +1352,22 @@ class _SummaryText:
     def __repr__(self):
         return self._text
 
-    def as_text(self):
+    def as_text(self) -> str:
         return self._text
 
 
-def mixedlm(formula, data, groups, re_formula=None, vc_formula=None,
-            subset=None, use_sparse=False, missing="none", *args, **kwargs):
+def mixedlm(
+    formula: str,
+    data: pd.DataFrame,
+    groups: ArrayLike | str,
+    re_formula: str | None = None,
+    vc_formula: Any = None,
+    subset: ArrayLike | None = None,
+    use_sparse: bool = False,
+    missing: str = "none",
+    *args: Any,
+    **kwargs: Any,
+) -> MixedLM:
     """Formula interface, matching ``statsmodels.formula.api.mixedlm``."""
     return MixedLM.from_formula(formula, data, *args, re_formula=re_formula,
                                 vc_formula=vc_formula, subset=subset,

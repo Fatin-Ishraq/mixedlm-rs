@@ -5,6 +5,21 @@ edition = "2021"
 rust-version = "1.74"
 license = "MIT"
 description = "Fast linear mixed-effects models: profiled REML over a block-diagonal Cholesky"
+# maturin builds the sdist from Cargo's file list, so this -- not
+# [tool.maturin] exclude -- is what keeps the GPL-2 lme4 fixtures under
+# data/ out of the source archive. This project is MIT; those fixtures are
+# test data that lives in the git repository only. The tests themselves are
+# kept in the archive so a downstream packager can run them; the oracle
+# tests skip when the fixtures are absent.
+exclude = [
+    "data/**",
+    "bench/**",
+    "proto/**",
+    ".review/**",
+    "dist/**",
+    "target/**",
+    "*.log",
+]
 
 [lib]
 name = "_mixedlm_rs"
