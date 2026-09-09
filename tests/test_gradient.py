@@ -1,10 +1,16 @@
-"""The analytic gradient is the one place this project goes past its references.
+"""The analytic gradient, checked against central finite differences.
 
-lme4 and MixedModels.jl both optimise theta derivative-free (BOBYQA). We derive
-and evaluate the gradient of the profiled criterion instead. That derivation is
-therefore the most dangerous code in the package, and it is checked here against
-central finite differences across a wide sweep of shapes, thetas and both
-criteria.
+The gradient of the profiled criterion is not novel -- Bates et al. derive the
+ML version in the lme4 paper (eq. 46-48), and MixedModels.jl documents
+derivative support. What is here is a REML gradient specialised to the block
+structure. What differs in practice is that the optimiser uses it, where lme4
+and MixedModels.jl both optimise derivative-free with BOBYQA.
+
+It is still the most dangerous code in the package, because a wrong gradient
+converges quietly to a wrong answer. It is checked here against central finite
+differences over a wide sweep of shapes, thetas and both criteria, and in
+tests/test_dense_reference.py against a dense implementation that shares no
+code with it.
 
 A wrong gradient does not crash -- it quietly converges to the wrong answer.
 """

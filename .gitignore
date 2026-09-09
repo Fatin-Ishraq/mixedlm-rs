@@ -11,3 +11,12 @@ __pycache__/
 # generated benchmark fixtures (60MB, rebuilt by bench/vs_lme4.py --write)
 bench/fixtures/
 bench_stages_out.txt
+
+# tooling caches
+.mypy_cache/
+
+# review scratch: an external reviewer's venv, cache and findings. Useful
+# while acting on them, not part of the package.
+.review/
+.review-venv/
+.review-uv-cache/

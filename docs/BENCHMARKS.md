@@ -6,7 +6,17 @@ Convergence status is reported for every row, because on several fixtures the
 reference does not converge and a speedup ratio would be comparing against a fit
 that did not happen.
 
-Reproduce with `python bench/scaling.py` and `python bench/stages.py`.
+Reproduce with `python bench/scaling.py` and `python bench/stages.py`. Both
+refuse to print a timing unless the fits agree; the tolerances, and the reason
+each is what it is, are in `bench/tolerances.py`.
+
+**Counts can move with the environment.** The optimiser on the default path is
+SciPy's, so a different SciPy build can change which fixtures land on which
+side of a tie. An independent re-run on Python 3.11 with SciPy 1.17.1 produced
+130 wins and 168 ties on the 400-case sweep where the recorded baseline has 131
+and 167 — the same picture, one case moved. That is why `bench/baseline.json`
+records the environment alongside the counts rather than treating it as a
+footnote, and why the reproduction instructions name it.
 
 ## Machine
 
@@ -277,6 +287,15 @@ Across 120 randomised fixtures (see CORRECTNESS.md):
 | outcome | count |
 |---|---:|
 | statsmodels did not converge | **26** |
-| mixedlm-rs found a strictly better optimum | **19** |
-| same optimum | 75 |
+| mixedlm-rs found a strictly better optimum | **42** |
+| same optimum | 52 |
 | mixedlm-rs found a worse optimum | **0** |
+
+These counts, and every other one quoted across the documentation, come from
+`bench/baseline.json` — one recorded run with its commit, environment and
+seeds. They are checked against it by `tests/test_baseline.py`.
+
+That file exists because this table said **19** wins and **75** ties for a long
+time after README.md and CORRECTNESS.md had moved to 42 and 52. Both were true
+at some commit; nothing tied either to a run, so nothing caught the drift. Now
+a stale number fails the test suite.

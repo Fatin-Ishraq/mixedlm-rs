@@ -103,17 +103,61 @@ def _setup_r_env():
     additionally needs os.add_dll_directory. R_LIBS_USER points at the user
     library because R's own library directory under Program Files is read-only.
     """
+    import glob
     import os
-    r_home = os.environ.get("R_HOME") or "C:/Program Files/R/R-4.6.1"
-    rbin = os.path.join(r_home, "bin", "x64")
+    import shutil
+
+    r_home = os.environ.get("R_HOME") or _discover_r_home()
+    if not r_home:
+        return
     os.environ["R_HOME"] = r_home
-    os.environ.setdefault("R_LIBS_USER", "C:/Users/Fatin/R/win-library")
-    if os.path.isdir(rbin):
-        os.environ["PATH"] = rbin + os.pathsep + os.environ.get("PATH", "")
+    # R's own library is often read-only (Program Files), so rpy2 needs a
+    # writable one. Respect the caller's, else R's documented default.
+    if "R_LIBS_USER" not in os.environ:
+        default = os.path.expanduser("~/R/win-library") if os.name == "nt" \
+            else os.path.expanduser("~/R/library")
+        os.environ["R_LIBS_USER"] = default
+    for sub in ("bin/x64", "bin"):
+        rbin = os.path.join(r_home, *sub.split("/"))
+        if os.path.isdir(rbin):
+            os.environ["PATH"] = rbin + os.pathsep + os.environ.get("PATH", "")
+            try:
+                os.add_dll_directory(rbin)
+            except (AttributeError, OSError):
+                pass
+            break
+    del glob, shutil
+
+
+def _discover_r_home():
+    """Locate R without hard-coding one machine's install.
+
+    Set R_HOME to override. This used to default to a literal path from the
+    author's laptop, which made the benchmark unrunnable anywhere else.
+    """
+    import glob
+    import os
+    import shutil
+    import subprocess
+
+    exe = shutil.which("R") or shutil.which("Rscript")
+    if exe:
         try:
-            os.add_dll_directory(rbin)
-        except (AttributeError, OSError):
+            out = subprocess.run([exe, "RHOME"], capture_output=True, text=True,
+                                 timeout=30)
+            if out.returncode == 0 and out.stdout.strip():
+                return out.stdout.strip().splitlines()[-1].strip()
+        except Exception:
             pass
+    if os.name == "nt":
+        found = sorted(glob.glob("C:/Program Files/R/R-*"))
+        if found:
+            return found[-1]
+    for guess in ("/usr/lib/R", "/usr/local/lib/R",
+                  "/Library/Frameworks/R.framework/Resources"):
+        if os.path.isdir(guess):
+            return guess
+    return None
 
 
 def time_pymer4():

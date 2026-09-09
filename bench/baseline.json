@@ -1,0 +1,94 @@
+{
+ "recorded_at": "2026-09-09T16:34:35",
+ "environment": {
+  "commit": "7674bbb81f090ae7a051cd25c141b415a076d44a",
+  "working_tree_dirty": true,
+  "mixedlm_rs": "0.1.0",
+  "python": "3.14.3",
+  "implementation": "CPython",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "machine": "AMD64",
+  "processor": "AMD64 Family 25 Model 80 Stepping 0, AuthenticAMD",
+  "dependencies": {
+   "numpy": "2.5.2",
+   "scipy": "1.18.1",
+   "pandas": "3.0.5",
+   "patsy": "1.0.3",
+   "statsmodels": "0.15.0"
+  }
+ },
+ "differential": {
+  "cases": 120,
+  "seed_base": 10000,
+  "generator": "tests/test_fuzz.py::random_case",
+  "seconds": 66.08867839999948,
+  "counts": {
+   "reference did not converge": 26,
+   "we found a better optimum": 42,
+   "same optimum": 52,
+   "we found a worse optimum": 0
+  },
+  "losses": [],
+  "uncertified_seeds": [],
+  "warnings": {
+   "ConvergenceWarning": 275,
+   "SingularMatrixWarning": 19
+  }
+ },
+ "stress": {
+  "cases": 400,
+  "seed": 0,
+  "generator": "bench/stress_sweep.py::make_case",
+  "seconds": 207.7930723999998,
+  "counts": {
+   "same optimum": 167,
+   "reference did not converge": 99,
+   "we found a better optimum": 131,
+   "we found a worse optimum": 3
+  },
+  "losses": [
+   {
+    "case": 100,
+    "shape": "collinear",
+    "deviance_worse_by": 5.6188595181083656e-05,
+    "n": 1035,
+    "groups": 72
+   },
+   {
+    "case": 214,
+    "shape": "collinear",
+    "deviance_worse_by": 5.7103996311980154e-05,
+    "n": 186,
+    "groups": 15
+   },
+   {
+    "case": 282,
+    "shape": "tiny",
+    "deviance_worse_by": 2.7365024379832903e-06,
+    "n": 264,
+    "groups": 132
+   }
+  ],
+  "uncertified": [
+   {
+    "case": 214,
+    "shape": "collinear"
+   }
+  ],
+  "warnings": {
+   "ConvergenceWarning": 980,
+   "SingularMatrixWarning": 58
+  }
+ },
+ "quick": false,
+ "suites": {
+  "pytest": {
+   "returncode": 0,
+   "summary": "505 passed, 13 skipped in 106.14s (0:01:46)"
+  },
+  "cargo": {
+   "returncode": 0,
+   "summary": "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+  }
+ }
+}

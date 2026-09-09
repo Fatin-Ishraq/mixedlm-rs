@@ -29,6 +29,9 @@ for it.
 pip install mixedlm-rs
 ```
 
+Wheels are `abi3`, one per platform, covering Python 3.10–3.14 on Linux, macOS
+and Windows. There is nothing to compile unless you want to.
+
 ```python
 import pandas as pd
 import mixedlm_rs as mlm
@@ -269,7 +272,7 @@ do `fe_pen`, `cov_pen` and `free`. GLMMs are out of scope.
 ## Is it actually the same?
 
 That is the only question that matters for a drop-in, so it is what the test
-suite is built around — **282 Python tests and 7 Rust tests**.
+suite is built around — **505 Python tests and 7 Rust tests**.
 
 The primary oracle is **lme4's published fits**, not statsmodels, because
 statsmodels is the thing that is wrong on some inputs. `sleepstudy`, `Dyestuff`
@@ -327,16 +330,59 @@ An external review then found several more, which are fixed and documented:
 
 [What is verified, and every divergence →](docs/CORRECTNESS.md)
 
-## Development
+## Building from source
+
+Needs a Rust toolchain — **1.83 or newer**, which is what the locked
+dependencies require and what CI builds with.
 
 ```bash
-pip install maturin pytest numpy scipy pandas patsy statsmodels
+pip install maturin
 python -m maturin build --release --out dist
 pip install --force-reinstall --no-deps --no-index --find-links dist mixedlm-rs
-pytest tests/ -q
-cargo test --lib
-python bench/scaling.py
 ```
+
+### Development
+
+```bash
+pip install maturin pytest ruff mypy numpy scipy pandas patsy statsmodels
+python -m maturin build --release --out dist
+pip install --force-reinstall --no-deps --no-index --find-links dist mixedlm-rs
+
+pytest tests/ -q          # the suite
+cargo test --lib          # the linear algebra and the optimiser
+ruff check .              # rules pinned in pyproject.toml
+mypy                      # configured in pyproject.toml
+cargo clippy --all-targets -- -D warnings
+cargo audit               # Rust advisories
+python -m pip_audit --requirement requirements-runtime.txt
+```
+
+Benchmarks and the recorded numerical baseline:
+
+```bash
+python bench/scaling.py            # scaling against statsmodels
+python bench/stages.py             # where the speed comes from
+python bench/stress_sweep.py       # 400 adversarial cases
+python bench/baseline.py           # re-record bench/baseline.json
+```
+
+Every benchmark refuses to print a timing unless the fits agree; the
+tolerances and the reasoning behind each are in `bench/tolerances.py`. The
+counts quoted in the documentation come from `bench/baseline.json` and are
+checked against it by `tests/test_baseline.py`, so a stale table fails the
+suite.
+
+## Support
+
+Only the latest release is supported; before 1.0 there are no backports. See
+[SECURITY.md](SECURITY.md) for the reporting process and the dependency-audit
+policy, and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for what is
+linked, what is depended on, and what is deliberately not distributed.
+
+- **Issues and questions:** <https://github.com/fatin-ishraq/mixedlm-rs/issues>
+- **Changelog:** [CHANGELOG.md](CHANGELOG.md)
+- **Migration contract:** [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)
+- **Known gaps:** [docs/LIMITATIONS.md](docs/LIMITATIONS.md)
 
 ## Licence and credit
 

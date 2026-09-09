@@ -9,16 +9,21 @@ The largest fixture is sized after statsmodels#9097, where a user reported
 mixedlm taking 41 minutes on 125,066 groups against 1-2 seconds for R's lmer.
 """
 
+import pathlib
+import sys
 import time
 import warnings
 
 import numpy as np
 import pandas as pd
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
 warnings.filterwarnings("ignore")
 
 import mixedlm_rs as mlm
 import statsmodels.formula.api as smf
+import tolerances
 
 CASES = [
     #  groups,  per group,  run statsmodels?
@@ -82,9 +87,11 @@ def run(ngroups, nper, do_sm):
 
 # A speedup is only meaningful next to a checked answer, so these are limits,
 # not decorations: exceeding one aborts the run rather than printing a number.
-MAX_FE_SE = 0.05        # fixed effects, in units of their own standard error
-MAX_RE_REL = 0.02       # variance components, relative to their own size
-MIN_DLLF = -1e-6        # our criterion must never be worse than the reference's
+# The numbers, and why they are what they are, live in tolerances.py so that
+# every benchmark here agrees about them.
+MAX_FE_SE = tolerances.FIXED_EFFECT_SE
+MAX_RE_REL = tolerances.COV_RE_REL
+MIN_DLLF = -tolerances.DEVIANCE_ABS / 2      # llf, so half the deviance bound
 
 
 def main():

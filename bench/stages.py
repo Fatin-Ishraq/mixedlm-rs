@@ -42,10 +42,12 @@ from scipy.optimize import minimize
 
 warnings.filterwarnings("ignore")
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "proto"))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import mixedlm_rs as mlm
 import preml
 import statsmodels.formula.api as smf
+import tolerances
 from mixedlm_rs import LmmCore
 
 CASES = [(500, 20), (1000, 20), (2000, 10), (5000, 8), (20000, 5)]
@@ -180,14 +182,18 @@ def main():
             # would be demanding that we reproduce a worse fit -- which is the
             # thing this package exists not to do. Only a genuinely worse
             # criterion, or a disagreement at the *same* optimum, is a fault.
+            #
+            # The tolerance is absolute. It was `1e-6 * abs(deviance)`, which
+            # scales by a quantity carrying an arbitrary additive constant --
+            # the error this project criticises elsewhere. See tolerances.py.
             gap = dev(r, "S4") - dev(r, "S0")     # negative means we are better
-            tol = 1e-6 * max(1.0, abs(dev(r, "S0")))
+            tol = tolerances.DEVIANCE_ABS
             if gap > tol:
                 bad.append((r["n"], r["groups"],
                             f"our criterion is worse than S0 by {gap:.3g}"))
             elif gap >= -tol:
                 in_se = np.max(np.abs(beta(r, "S4") - beta(r, "S0")) / errs)
-                if in_se > 0.05:
+                if in_se > tolerances.FIXED_EFFECT_SE:
                     bad.append((r["n"], r["groups"],
                                 f"same optimum but beta differs by "
                                 f"{in_se:.3g} SEs"))
@@ -195,13 +201,13 @@ def main():
                 better.append((r["n"], r["groups"], -gap))
         for stage in ("S1", "S2", "S3", "S5", "S6"):
             in_se = np.max(np.abs(beta(r, stage) - beta(r, "S4")) / errs)
-            if in_se > 0.05:
+            if in_se > tolerances.FIXED_EFFECT_SE:
                 bad.append((r["n"], r["groups"], f"{stage} vs S4: {in_se:.3g} SEs"))
             # And the criterion itself, which is what they are optimising. Our
             # own stages must reach the same optimum, not merely a similar
             # answer; S6 may do better, since it alone runs the boundary escape.
             gap = dev(r, stage) - dev(r, "S4")
-            if gap > 1e-6 * max(1.0, abs(dev(r, "S4"))):
+            if gap > tolerances.DEVIANCE_ABS:
                 bad.append((r["n"], r["groups"],
                             f"{stage} criterion worse than S4 by {gap:.3g}"))
     if bad:

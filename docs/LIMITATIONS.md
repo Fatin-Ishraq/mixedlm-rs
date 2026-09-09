@@ -153,19 +153,30 @@ Unknown keyword arguments to `MixedLM(...)` and `fit(...)` raise `TypeError`.
   entries of the relative covariance factor — not statsmodels' packed covariance
   parameters, and `hessian` is `(k_re2, k_re2)`, not the reference's full square.
   They are not term-by-term comparable with the reference's.
-- **Pickling drops patsy's `DesignInfo`.** patsy declines to pickle it
-  (pydata/patsy#26), so a formula-fitted model that has been through a pickle
-  can no longer rebuild a design from raw new data; `predict` on an
-  already-built design matrix still works. `MixedLMResults.save`/`.load` are
-  provided for the common case.
+- **Pickling preserves formula prediction, by keeping the training frame.**
+  patsy declines to pickle a `DesignInfo` (pydata/patsy#26), so it is rebuilt
+  on the other side from the frame the model was fitted on — which is what
+  reproduces the state its transforms learned (`C()` levels, `center()` means)
+  rather than recomputing it against new data. The cost is that the pickle
+  carries that frame. `save(path, with_data=False)` drops it for a smaller
+  file; `predict` on raw new data then raises an error saying exactly that,
+  and prediction from a pre-built design matrix still works.
 
 ## Behavioural differences
 
 - **`method=`** selects the optimiser driver, not statsmodels' solver names.
   The default is scipy's L-BFGS-B over the Rust objective and analytic gradient;
-  `method="rust"` uses the in-Rust projected L-BFGS, which needs roughly three
-  times as many objective evaluations and exists for callers who want no scipy
-  in the loop. Both paths run the same boundary escape and the same
+  `method="rust"` is **experimental** in this release and warns
+  (`ExperimentalWarning`) when used. It uses the in-Rust projected L-BFGS,
+  which needs roughly three times as many objective evaluations and exists for
+  callers who want no scipy in the loop.
+
+  When it fails it returns the bad estimate rather than raising, exactly as
+  `statsmodels` does — with `converged=False`, an `ConvergenceWarning`, and
+  `results.diagnostics` explaining why. That is deliberate, because raising
+  would break the drop-in contract, but it does mean the criticism this
+  package makes of `statsmodels` applies to this path too. Check
+  `results.converged`. Both paths run the same boundary escape and the same
   stationarity certification.
 
   They do **not** get the same number of starts, and that is deliberate. The
@@ -186,8 +197,21 @@ Unknown keyword arguments to `MixedLM(...)` and `fit(...)` raise `TypeError`.
 
 ## Typing
 
-The public API carries **no type annotations** and ships no `py.typed` marker.
-Type checkers will treat this package as untyped and say so, which is accurate.
+The public API is annotated and the package ships `py.typed`, plus a stub for
+the compiled module (`_mixedlm_rs.pyi`). `mypy --strict` accepts
+`tests/typing_usage.py`, which exercises the public surface for real, and that
+check runs in CI — a count of annotated functions is not the same check, and
+was the mistake the first time this was attempted.
+
+Two caveats worth stating:
+
+- **`LmmCore` is a low-level interface.** It is typed and exported, but it
+  takes prepared numeric designs, does no conditioning, no boundary escape and
+  no convergence certification, and its argument conventions may change between
+  releases. Use `MixedLM` unless you specifically want the raw criterion.
+- **`Any` appears where the reference is genuinely dynamic** — the contrast
+  objects returned by `t_test`/`wald_test`/`f_test`, and `**kwargs` passthroughs
+  that exist for signature compatibility.
 
 ## Platforms actually tested
 

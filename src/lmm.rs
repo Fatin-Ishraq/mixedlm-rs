@@ -38,9 +38,16 @@
 //! penalised least squares problem at fixed `theta`, so only the explicit
 //! `theta` dependence contributes.
 //!
-//! Every one of these is checked against central finite differences in the test
-//! suite, because this derivation is the one place the project goes beyond its
-//! references.
+//! The gradient of the profiled criterion is not itself novel: Bates et al.
+//! derive the ML version in the lme4 paper (eq. 46-48), and MixedModels.jl
+//! documents derivative support. What is here is a REML gradient specialised
+//! to the single-grouping-factor block structure and evaluated in the two
+//! passes that already produce the criterion. What differs in practice is
+//! that the optimiser *uses* it, where both of those optimise derivative-free.
+//!
+//! Every term is checked against central finite differences -- and against an
+//! independent dense implementation in tests/test_dense_reference.py, which
+//! shares no code with this one.
 
 use crate::linalg::*;
 use rayon::prelude::*;

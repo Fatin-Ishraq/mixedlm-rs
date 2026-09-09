@@ -33,7 +33,10 @@ OUT = FIXTURES / "pymer4_results.csv"
 R_HOME = os.environ.get("R_HOME") or "C:/Program Files/R/R-4.6.1"
 RBIN = os.path.join(R_HOME, "bin", "x64")
 os.environ["R_HOME"] = R_HOME
-os.environ.setdefault("R_LIBS_USER", "C:/Users/Fatin/R/win-library")
+os.environ.setdefault(
+    "R_LIBS_USER",
+    os.path.expanduser("~/R/win-library" if os.name == "nt"
+                       else "~/R/library"))
 if os.path.isdir(RBIN):
     os.environ["PATH"] = RBIN + os.pathsep + os.environ.get("PATH", "")
     try:

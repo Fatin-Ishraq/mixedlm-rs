@@ -7,7 +7,14 @@
 
 args <- commandArgs(trailingOnly = TRUE)
 dir <- if (length(args) >= 1) args[1] else "bench/fixtures"
-libp <- Sys.getenv("R_USER_LIB", unset = "C:/Users/Fatin/R/win-library")
+# Set R_USER_LIB to override. The default follows R's own convention
+# rather than one machine's layout, which is what this used to hard-code.
+default_lib <- if (.Platform$OS.type == "windows") {
+  file.path(path.expand("~"), "R", "win-library")
+} else {
+  file.path(path.expand("~"), "R", "library")
+}
+libp <- Sys.getenv("R_USER_LIB", unset = default_lib)
 if (dir.exists(libp)) .libPaths(c(libp, .libPaths()))
 
 suppressPackageStartupMessages(library(lme4))

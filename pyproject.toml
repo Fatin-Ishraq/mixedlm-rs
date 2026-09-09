@@ -19,10 +19,18 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Rust",
     "Topic :: Scientific/Engineering :: Mathematics",
+    "Typing :: Typed",
 ]
+
 # patsy is required, not optional: the documented first example -- and the
 # `mixedlm(...)` entry point that mirrors statsmodels' formula API -- needs it,
 # so a clean install of the base package has to be able to run it.
@@ -34,6 +42,13 @@ dependencies = ["numpy>=1.23", "scipy>=1.9", "pandas>=1.5", "patsy>=0.5"]
 formula = []
 test = ["pytest>=7", "statsmodels>=0.14"]
 lint = ["ruff>=0.6", "mypy>=1.8"]
+[project.urls]
+Homepage = "https://github.com/fatin-ishraq/mixedlm-rs"
+Repository = "https://github.com/fatin-ishraq/mixedlm-rs"
+Changelog = "https://github.com/fatin-ishraq/mixedlm-rs/blob/main/CHANGELOG.md"
+Issues = "https://github.com/fatin-ishraq/mixedlm-rs/issues"
+Documentation = "https://github.com/fatin-ishraq/mixedlm-rs/blob/main/docs/COMPATIBILITY.md"
+
 
 [tool.maturin]
 python-source = "python"
