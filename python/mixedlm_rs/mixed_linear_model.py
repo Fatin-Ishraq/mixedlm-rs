@@ -793,21 +793,42 @@ class MixedLM:
         same way they were at fit time. Passing raw new data used to be a shape
         error, because only the numeric design was retained.
         """
+        raw = isinstance(exog, (pd.DataFrame, dict))
         if exog is None:
             X = self.exog
-        elif transform and self._design_info is not None and                 isinstance(exog, (pd.DataFrame, dict)):
+        elif transform and raw and self._ensure_design_info():
             from patsy import dmatrix
             X = np.asarray(dmatrix(self._design_info, exog,
                                    return_type="matrix"), dtype=float)
+        elif transform and raw and self.formula is not None:
+            # Formula-fitted, but the design metadata is gone and cannot be
+            # rebuilt -- the frame it was fitted on was not retained. Telling
+            # the caller to "pass a DataFrame and leave transform=True" here,
+            # as this once did, advises exactly the thing that just failed.
+            raise ValueError(
+                "this model was fitted from the formula "
+                f"{self.formula!r}, but its patsy design metadata is not "
+                "available, so raw new data cannot be converted into a design "
+                "matrix. patsy cannot pickle a DesignInfo (pydata/patsy#26); "
+                "it is normally rebuilt from the frame the model was fitted "
+                "on, and that frame was dropped -- by save(with_data=False), "
+                "or by a pickle written before this was supported. Either "
+                "re-fit the model, or build the design yourself and pass it "
+                "with transform=False: "
+                "`X = patsy.dmatrix(<the right-hand side of your formula>, "
+                "new_data)` then `result.predict(X, transform=False)`.")
         else:
             X = np.asarray(exog, float)
             if X.ndim == 1:
                 X = X[:, None]
         if X.shape[1] != self.k_fe:
+            hint = ""
+            if self.formula is not None and not raw:
+                hint = (" This model was fitted from a formula: pass a "
+                        "DataFrame of new data with transform=True to have "
+                        "the design rebuilt for you.")
             raise ValueError(
-                f"exog has {X.shape[1]} columns, expected {self.k_fe}. For a "
-                "formula-fitted model pass a DataFrame of new data and leave "
-                "transform=True so the design is rebuilt.")
+                f"exog has {X.shape[1]} columns, expected {self.k_fe}.{hint}")
         if isinstance(params, MixedLMParams):
             fe = np.asarray(params.fe_params, float)
         else:
@@ -860,14 +881,16 @@ class MixedLM:
 
     # -- persistence --------------------------------------------------------
     def __getstate__(self):
-        """Drop what cannot be pickled: the compiled core and patsy's DesignInfo.
+        """Drop what cannot be pickled, and keep what can rebuild it.
 
-        patsy declines to pickle a ``DesignInfo`` (pydata/patsy#26), so a
-        formula-fitted model loses the ability to rebuild a design for
-        ``predict`` on new *raw* data across a pickle boundary. Everything
-        else -- the fitted numbers, the numeric designs, ``predict`` on an
-        already-built design matrix -- survives. Documented in
-        docs/LIMITATIONS.md.
+        The compiled core and patsy's ``DesignInfo`` both go. The frame the
+        model was fitted on stays, because :meth:`_ensure_design_info` rebuilds
+        the design from it on the other side, which is what keeps ``predict``
+        working on raw new data after a round trip.
+
+        ``MixedLMResults.save(..., with_data=False)`` drops that frame for
+        callers who would rather have a small file, and ``predict`` then raises
+        an error saying precisely that instead of advising the impossible.
         """
         state = self.__dict__.copy()
         state["_core_cache"] = None
@@ -877,6 +900,47 @@ class MixedLM:
 
     def __setstate__(self, state):
         self.__dict__.update(state)
+        self.__dict__.setdefault("_design_info", None)
+        self.__dict__.setdefault("_re_design_info", None)
+
+    def _ensure_design_info(self) -> bool:
+        """Rebuild patsy's design metadata after a pickle round-trip.
+
+        patsy declines to pickle a ``DesignInfo`` (pydata/patsy#26). Dropping it
+        and stopping there breaks ``predict`` on raw new data across a pickle
+        boundary -- and the resulting error told the caller to pass raw new
+        data, which is exactly what had just failed.
+
+        So the design is *reconstructed* instead. Re-running the formula
+        against the frame the model was fitted on reproduces the identical
+        ``DesignInfo``, including whatever the stateful transforms learned
+        (``C()`` levels, ``center()`` means, spline knots) -- which is why the
+        frame has to be the training one and not the new data.
+
+        Returns True when a fixed-effect design is available afterwards.
+        """
+        if self._design_info is not None:
+            return True
+        if self.formula is None or self.data_frame is None:
+            return False
+
+        from patsy import dmatrices, dmatrix
+
+        try:
+            _, design = dmatrices(self.formula, self.data_frame,
+                                  return_type="matrix", NA_action="drop")
+            self._design_info = design.design_info
+            rf = self.re_formula
+            if rf is not None and str(rf).strip() not in ("1", "~1", ""):
+                self._re_design_info = dmatrix(
+                    str(rf), self.data_frame, return_type="matrix",
+                    NA_action="drop").design_info
+        except Exception:
+            # The formula no longer evaluates against the retained frame. There
+            # is nothing useful to do here; predict() reports it and names the
+            # cause, rather than failing with a shape error.
+            return False
+        return True
 
     def fit_regularized(self, *args: Any, **kwargs: Any) -> MixedLMResults:
         raise NotImplementedError(
@@ -1021,11 +1085,29 @@ class MixedLMResults:
     def __setstate__(self, state):
         self.__dict__.update(state)
 
-    def save(self, path: str | os.PathLike[str]) -> None:
-        """Pickle this result to ``path``."""
+    def save(self, path: str | os.PathLike[str],
+             with_data: bool = True) -> None:
+        """Pickle this result to ``path``.
+
+        ``with_data`` keeps the frame the model was fitted on, which is what
+        lets :meth:`predict` rebuild a patsy design for raw new data after the
+        file is loaded again. Pass False for a small file when only the fitted
+        numbers are wanted; prediction from a pre-built design matrix still
+        works, and prediction from raw data then raises an error that says why.
+        """
         import pickle
-        with open(path, "wb") as fh:
-            pickle.dump(self, fh)
+        if with_data:
+            with open(path, "wb") as fh:
+                pickle.dump(self, fh)
+            return
+
+        frame = self.model.data_frame
+        self.model.data_frame = None
+        try:
+            with open(path, "wb") as fh:
+                pickle.dump(self, fh)
+        finally:
+            self.model.data_frame = frame
 
     @classmethod
     def load(cls, path: str | os.PathLike[str]) -> MixedLMResults:
@@ -1322,6 +1404,17 @@ class MixedLMResults:
         return self.wald_test(r_matrix, use_f=True)
 
     # -- labelled views -----------------------------------------------------
+    @property
+    def diagnostics(self) -> dict[str, Any]:
+        """What the optimiser did, and how the result was certified.
+
+        Not a statsmodels attribute. It exists because a fit that fails to
+        certify needs to leave the caller something to act on: which optimiser
+        ran, the projected gradient it stopped at, the tolerance that was
+        required, and how many evaluations it took.
+        """
+        return dict(self._res["diagnostics"])
+
     @property
     def param_names(self) -> list[str]:
         """Names for every entry of :attr:`params`."""

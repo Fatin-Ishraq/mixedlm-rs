@@ -28,7 +28,12 @@ from ._mixedlm_rs import LmmCore
 if TYPE_CHECKING:  # pragma: no cover
     from numpy.typing import ArrayLike
 
-__all__ = ["ConvergenceWarning", "fit_core"]
+__all__ = ["ConvergenceWarning", "ExperimentalWarning", "fit_core"]
+
+
+class ExperimentalWarning(UserWarning):
+    """Raised when an interface that is not covered by the release's
+    stability claims is used. Currently only ``method="rust"``."""
 
 
 class ConvergenceWarning(UserWarning):
@@ -291,6 +296,22 @@ def fit_core(
 
     q = core.q
     use_rust = str(method).lower() == "rust"
+    if use_rust:
+        # Experimental for this release, and the reason is measured rather than
+        # cautious: across the 120 randomised fuzz fixtures the in-crate
+        # optimiser reaches a criterion 649 and 704 deviance units worse than
+        # scipy's on seeds 32 and 54. Both report converged=False, so nothing
+        # is claimed silently -- but "warns correctly" is not the same as
+        # "fit succeeded", and this path is not part of what the release says
+        # is stable. See tests/test_rust_optimiser.py.
+        warnings.warn(
+            'method="rust" is experimental in this release. It is the same '
+            "criterion and the same certification, but a weaker line search: "
+            "on 2 of 120 randomised fixtures it stops at a substantially worse "
+            "point, reported as converged=False. Use the default (scipy "
+            "L-BFGS-B) unless you specifically need no scipy in the optimiser "
+            "loop, and check `results.converged` if you do.",
+            ExperimentalWarning, stacklevel=3)
 
     # The number of starts is a property of the optimiser, not a taste.
     #
@@ -628,6 +649,22 @@ def fit_core(
     out = {
         "core": core,
         "theta": theta,
+        # Everything needed to explain a fit that did not certify, without
+        # having to reproduce it. A failure that only sets a flag leaves the
+        # caller nothing to act on.
+        "diagnostics": {
+            "method": "rust" if use_rust else "scipy-lbfgsb",
+            "converged": bool(converged),
+            "singular": bool(singular),
+            "criterion": "REML" if reml else "ML",
+            "deviance": float(deviance),
+            "max_abs_projected_gradient": float(grad_norm),
+            "gradient_tolerance": float(gtol_abs),
+            "n_objective_evaluations": int(nfev),
+            "n_iterations": int(nit),
+            "n_starts": int(n_starts),
+            "optimiser_message": str(message),
+        },
         "scale_factors": dscale,
         "converged": converged,
         "singular": singular,
