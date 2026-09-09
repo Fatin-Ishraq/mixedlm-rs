@@ -130,7 +130,9 @@ jobs:
           python -m pip install --upgrade pip maturin
           python -m maturin build --release --out dist
           python -m pip install --find-links dist --no-index --no-deps mixedlm-rs
-          python -m pip install numpy scipy pandas patsy pytest
+          # statsmodels included: the checker's differential findings compare
+          # against it directly, and it imports it at module scope.
+          python -m pip install numpy scipy pandas patsy pytest statsmodels
       # The checker inspects an sdist and shells out to cargo-audit. Neither
       # exists in a fresh job just because another job built or installed it --
       # jobs share no filesystem and no tools. Without these two steps the

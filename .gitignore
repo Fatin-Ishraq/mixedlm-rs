@@ -20,3 +20,6 @@ bench_stages_out.txt
 .review/
 .review-venv/
 .review-uv-cache/
+
+# scratch venvs used to check the declared dependency floors
+v3??/

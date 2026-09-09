@@ -287,7 +287,7 @@ do `fe_pen`, `cov_pen` and `free`. GLMMs are out of scope.
 ## Is it actually the same?
 
 That is the only question that matters for a drop-in, so it is what the test
-suite is built around — **520 Python tests and 7 Rust tests**.
+suite is built around — **573 Python tests and 7 Rust tests**.
 
 The primary oracle is **lme4's published fits**, not statsmodels, because
 statsmodels is the thing that is wrong on some inputs. `sleepstudy`, `Dyestuff`
@@ -394,7 +394,7 @@ Only the latest release is supported; before 1.0 there are no backports. See
 policy, and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for what is
 linked, what is depended on, and what is deliberately not distributed.
 
-- **Issues and questions:** <https://github.com/fatin-ishraq/mixedlm-rs/issues>
+- **Issues and questions:** <https://github.com/Fatin-Ishraq/mixedlm-rs/issues>
 - **Changelog:** [CHANGELOG.md](CHANGELOG.md)
 - **Migration contract:** [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)
 - **Known gaps:** [docs/LIMITATIONS.md](docs/LIMITATIONS.md)

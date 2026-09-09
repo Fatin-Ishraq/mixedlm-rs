@@ -22,9 +22,11 @@ repository was right and the checker was wrong in all three.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import pathlib
 import pickle
+import re
 import shutil
 import subprocess
 import sys
@@ -44,6 +46,15 @@ while not (ROOT / "pyproject.toml").exists():
     ROOT = ROOT.parent
 
 sys.path.insert(0, str(ROOT / "tests"))
+for _needed in ("mixedlm_rs", "statsmodels", "patsy"):
+    if importlib.util.find_spec(_needed) is None:
+        # A bare ModuleNotFoundError here reads as a broken script. It is a
+        # missing prerequisite, and the differential findings compare against
+        # statsmodels directly, so there is no reduced mode to fall back to.
+        raise SystemExit(
+            f"cannot verify the findings: {_needed} is not installed. The "
+            "checker fits both implementations and compares them.")
+
 import mixedlm_rs as mlm  # noqa: E402
 import statsmodels.formula.api as smf  # noqa: E402
 from mixedlm_rs import ExperimentalWarning  # noqa: E402
@@ -499,13 +510,21 @@ def f34():
         f"full q x p product; zero boundary; {len(live)} live `or True`"
 
 
+# Any absolute home directory, not one developer's. Hard-coding a
+# username makes the check pass on every machine except the one it was
+# written on, which is the wrong way round.
+_MACHINE_PATH = re.compile(r"(?:[A-Za-z]:[\\/]Users[\\/]|/home/|/Users/)\S+")
+
+
 def f35():
     v = read(ROOT / "bench" / "vs_lme4.py")
     t = read(ROOT / "bench" / "time_pymer4.py")
     b = read(ROOT / "docs" / "BENCHMARKS.md")
+    leaked = [m for f in (v, t, b) for m in _MACHINE_PATH.findall(f)]
     return ("pymer4_results.csv" in v and "if rep:" in t and "2.0.6" in b
-            and "C:/Users/Fatin" not in v), \
-        "report reads stored csv; warm-up excluded; lme4 2.0.6; no machine paths"
+            and not leaked), \
+        ("report reads stored csv; warm-up excluded; lme4 2.0.6; no "
+         "machine paths" if not leaked else f"machine paths: {leaked[:2]}")
 
 
 def f36():
@@ -1000,9 +1019,13 @@ width = max(len(d) for *_, d in RESULTS)
 print()
 for group in ("REVIEW", "RECHECK", "STAGE13"):
     rows = [r for r in RESULTS if r[0] == group]
-    doc = {"REVIEW": "REVIEW.md", "RECHECK": "RECHECK.md",
-           "STAGE13": "STAGE13-REVIEW.md"}[group]
-    print(f"--- .review/{doc}: {sum(1 for r in rows if r[2])}/{len(rows)} ---")
+    # Named, not pathed: these documents were an external deliverable and are
+    # not in the repository, so printing a repo-relative path would send a
+    # reader looking for a file that is not there.
+    doc = {"REVIEW": "review 1 (REVIEW.md)",
+           "RECHECK": "review 2 (RECHECK.md)",
+           "STAGE13": "review 3 (STAGE13-REVIEW.md)"}[group]
+    print(f"--- {doc}: {sum(1 for r in rows if r[2])}/{len(rows)} ---")
     for _, label, ok, detail in rows:
         print(f"  {label}  {'PASS' if ok else '**FAIL**':9s} {detail}")
     print()

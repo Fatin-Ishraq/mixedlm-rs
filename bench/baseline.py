@@ -60,12 +60,30 @@ def _extension_identity() -> dict:
         size = len(raw)
     package = pathlib.Path(mixedlm_rs.__file__).resolve().parent
     return {
-        "extension_path": path,
+        "extension_name": _redact(path),
         "extension_sha256": digest,
         "extension_bytes": size,
-        "package_path": str(package),
+        "package_location": _redact(str(package)),
         "imported_from_checkout": str(ROOT.resolve()) in str(package),
     }
+
+
+def _redact(path) -> str | None:
+    """A path stripped of everything specific to this machine.
+
+    This file is committed and published, so a full path publishes the
+    developer's home directory and account name. None of that identifies the
+    build -- the sha256 above does -- and `imported_from_checkout` already
+    answers the question a reader actually has, which is whether the numbers
+    came from an installed artifact or from the source tree.
+
+    What is kept is the last two components, enough to tell a site-packages
+    install from a checkout at a glance.
+    """
+    if not path:
+        return None
+    parts = pathlib.Path(path).parts
+    return "/".join(parts[-2:]) if len(parts) >= 2 else str(path)
 
 
 def environment() -> dict:

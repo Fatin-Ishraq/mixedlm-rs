@@ -57,11 +57,11 @@ formula = []
 test = ["pytest>=7", "statsmodels>=0.14"]
 lint = ["ruff>=0.6", "mypy>=1.8"]
 [project.urls]
-Homepage = "https://github.com/fatin-ishraq/mixedlm-rs"
-Repository = "https://github.com/fatin-ishraq/mixedlm-rs"
-Changelog = "https://github.com/fatin-ishraq/mixedlm-rs/blob/main/CHANGELOG.md"
-Issues = "https://github.com/fatin-ishraq/mixedlm-rs/issues"
-Documentation = "https://github.com/fatin-ishraq/mixedlm-rs/blob/main/docs/COMPATIBILITY.md"
+Homepage = "https://github.com/Fatin-Ishraq/mixedlm-rs"
+Repository = "https://github.com/Fatin-Ishraq/mixedlm-rs"
+Changelog = "https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/CHANGELOG.md"
+Issues = "https://github.com/Fatin-Ishraq/mixedlm-rs/issues"
+Documentation = "https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/docs/COMPATIBILITY.md"
 
 
 [tool.maturin]

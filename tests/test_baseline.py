@@ -166,6 +166,19 @@ def test_the_baseline_names_the_binary_that_produced_it(baseline):
     assert env["extension_bytes"], "extension size not recorded"
 
 
+def test_the_baseline_publishes_no_machine_paths(baseline):
+    """This file is committed, so it must not carry a home directory.
+
+    The hash identifies the build; the absolute path only identifies the
+    developer's account, and the benchmark report was already held to this.
+    """
+    blob = json.dumps(baseline)
+    for marker in ("C:\\Users", "/home/", "/Users/", "AppData"):
+        assert marker not in blob, (
+            f"bench/baseline.json contains {marker!r}, which publishes a "
+            "machine path. Re-run `python bench/baseline.py`.")
+
+
 def test_every_recorded_suite_passed(baseline):
     """A baseline is only a gate if the run it records was green.
 
