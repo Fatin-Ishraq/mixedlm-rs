@@ -37,12 +37,15 @@ pip install --find-links dist mixedlm-rs
 The build is `abi3`, so one wheel per platform will cover Python 3.10–3.14 once
 these are published, and there will be nothing to compile.
 
-**Currently verified:** the Windows x86-64 wheel and the sdist, both built and
-installed into clean environments outside the source tree
-(`python scripts/verify_release.py`, 69/69 checks). The Linux and macOS wheels
-come out of the same `maturin` configuration and their CI jobs are written; read
-the CI badge above for whether those jobs have gone green. Until they have,
-treat non-Windows wheels as expected to work rather than as tested.
+**Currently verified:** wheels on Linux, macOS and Windows, each built and then
+installed into a clean environment *outside* the source tree and smoke-tested
+there, plus a wheel rebuilt from the unpacked sdist
+(`python scripts/verify_release.py`). The suite runs on all three operating
+systems against Python 3.10, 3.11, 3.12, 3.13 and 3.14, and against the exact
+declared dependency floors on 3.10. The CI badge above is the live answer.
+
+Not yet verified: any platform CI does not run — 32-bit, musl, and Linux
+aarch64, which the release workflow cross-compiles but does not execute.
 
 ```python
 import pandas as pd

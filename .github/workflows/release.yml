@@ -34,24 +34,41 @@ jobs:
       - uses: actions/checkout@v4
       - name: Compare the tag with pyproject and Cargo
         run: |
+          python -m pip install --quiet packaging
           python - <<'PY'
-          import os, re, sys, tomllib, pathlib
+          import os, sys, tomllib, pathlib
+          from packaging.version import InvalidVersion, Version
 
           declared = tomllib.loads(
               pathlib.Path("pyproject.toml").read_text())["project"]["version"]
           cargo = tomllib.loads(
               pathlib.Path("Cargo.toml").read_text())["package"]["version"]
-          if declared != cargo:
+
+          # PEP 440 equality, not string equality. `0.1` and `0.1.0` are the
+          # same release -- both canonicalise to `0.1`, so PyPI treats an
+          # upload of one as a collision with the other. Cargo, meanwhile,
+          # requires all three semver components and rejects `0.1` outright.
+          # Comparing the strings would fail a tag that is in fact correct.
+          if Version(declared) != Version(cargo):
               sys.exit(f"pyproject says {declared}, Cargo.toml says {cargo}")
+          print(f"pyproject {declared} and Cargo {cargo} agree")
 
           ref = os.environ.get("GITHUB_REF", "")
-          if ref.startswith("refs/tags/"):
-              tag = ref.removeprefix("refs/tags/").lstrip("v")
-              if tag != declared:
-                  sys.exit(f"tag v{tag} does not match version {declared}")
-              print(f"tag v{tag} matches pyproject and Cargo.toml")
-          else:
+          if not ref.startswith("refs/tags/"):
               print(f"not a tag build; version {declared} is consistent")
+              raise SystemExit(0)
+
+          raw = ref.removeprefix("refs/tags/")
+          try:
+              tag = Version(raw.removeprefix("v"))
+          except InvalidVersion:
+              sys.exit(f"tag {raw!r} is not a PEP 440 version")
+          if tag != Version(declared):
+              sys.exit(
+                  f"tag {raw} is version {tag}, but this tree declares "
+                  f"{declared}. A wrong version on PyPI cannot be reused "
+                  "after deletion, so this stops here.")
+          print(f"tag {raw} matches the declared version {declared}")
           PY
 
   wheels:
