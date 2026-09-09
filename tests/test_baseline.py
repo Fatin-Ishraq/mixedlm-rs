@@ -59,6 +59,39 @@ def test_the_baseline_was_recorded_on_a_clean_tree(baseline):
         "`python bench/baseline.py` on a clean tree.")
 
 
+def test_no_code_has_changed_since_the_baseline_was_recorded(baseline):
+    """Doc edits after a baseline are fine. Code edits invalidate it.
+
+    The clean-tree check above only says the tree was clean *at record time*.
+    It says nothing about what happened afterwards, and a numerical baseline
+    recorded before a change to the optimiser describes the wrong code.
+    """
+    import subprocess
+
+    commit = baseline["environment"]["commit"]
+    if commit is None:
+        pytest.skip("baseline has no commit recorded")
+
+    probe = subprocess.run(["git", "cat-file", "-e", commit + "^{commit}"],
+                           cwd=ROOT, capture_output=True, text=True)
+    if probe.returncode != 0:
+        pytest.skip("the recorded commit is not in this repository")
+
+    diff = subprocess.run(
+        ["git", "diff", "--name-only", commit, "HEAD", "--",
+         "src", "python", "Cargo.toml", "Cargo.lock", "pyproject.toml"],
+        cwd=ROOT, capture_output=True, text=True)
+    if diff.returncode != 0:
+        pytest.skip("git diff unavailable")
+
+    changed = [f for f in diff.stdout.split() if f.strip()]
+    assert not changed, (
+        "code has changed since bench/baseline.json was recorded at "
+        f"{commit[:10]}, so its numbers may no longer describe this tree: "
+        + ", ".join(changed)
+        + ". Re-run `python bench/baseline.py`.")
+
+
 def test_the_baseline_is_a_full_run(baseline):
     assert baseline["quick"] is False, (
         "bench/baseline.json came from a --quick run; the documents quote the "
