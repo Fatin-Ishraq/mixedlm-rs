@@ -236,6 +236,191 @@ def _designs(formula, re_formula, data, missing, eval_env):
             names, kept, X.design_info, re_info)
 
 
+# Defaults for the optimiser controls `fit()` accepts, with the rule each one
+# has to satisfy. `n_starts=None` means "let the driver choose per optimiser":
+# 1 for scipy's L-BFGS-B and 5 for the in-crate one, both measured.
+_FIT_OPTIONS = {
+    "maxiter": (500, "a positive integer"),
+    "gtol": (1e-8, "a positive finite float"),
+    "ftol": (1e-12, "a positive finite float"),
+    "n_starts": (None, "a positive integer, or None to choose per optimiser"),
+}
+
+
+def _validate_fit_options(kwargs):
+    """Check the optimiser controls, and reject anything unrecognised.
+
+    Returns the validated options. Raises before any fitting happens, so a
+    mistake costs a millisecond rather than a whole optimisation.
+    """
+    unknown = set(kwargs) - set(_FIT_OPTIONS)
+    if unknown:
+        raise TypeError(
+            "unexpected keyword argument(s) for fit: "
+            + ", ".join(sorted(unknown))
+            + ". Accepted optimiser controls are: "
+            + ", ".join(sorted(_FIT_OPTIONS))
+            + ". statsmodels options that exist but are not implemented here "
+              "raise NotImplementedError with a pointer to "
+              "docs/LIMITATIONS.md.")
+
+    out = {}
+    for name, (default, rule) in _FIT_OPTIONS.items():
+        value = kwargs.get(name, default)
+        if name == "n_starts" and value is None:
+            out[name] = None
+            continue
+
+        if name in ("maxiter", "n_starts"):
+            if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+                raise TypeError(
+                    f"{name}={value!r} must be {rule}, not "
+                    f"{type(value).__name__}")
+            value = int(value)
+            if value < 1:
+                raise ValueError(f"{name}={value} must be {rule}")
+        else:
+            try:
+                value = float(value)
+            except (TypeError, ValueError) as exc:
+                raise TypeError(
+                    f"{name}={value!r} must be {rule}, not "
+                    f"{type(value).__name__}") from exc
+            if not np.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name}={value!r} must be {rule}")
+        out[name] = value
+
+    # A tolerance looser than the certificate it is checked against is a
+    # contradiction: the optimiser would stop early and the stationarity check
+    # would then reject the point it was told to stop at.
+    if out["gtol"] > 1e-3:
+        warnings.warn(
+            f"gtol={out['gtol']:g} is looser than the stationarity tolerance "
+            "this fit is certified against, so the optimiser will stop early "
+            "and the certificate will fail. Expect converged=False.",
+            UserWarning, stacklevel=3)
+    return out
+
+
+def _subset_positions(data, subset):
+    """Positional row indices selected by ``subset``.
+
+    Two accepted forms, and they are distinguished by dtype rather than by
+    guessing:
+
+    * A **boolean mask** of the same length as ``data``. If it is a Series its
+      index must match the frame's, so that a mask built from a different
+      frame cannot silently select the wrong rows.
+    * A collection of **index labels**. This is pandas' and statsmodels'
+      meaning of ``subset``, and it is what this used to get wrong: labels were
+      treated as positions, so ``subset=[10, 20]`` on a frame indexed
+      ``100..199`` selected rows 10 and 20 rather than raising, and on a
+      string-labelled frame it selected nothing.
+
+    Selection is by membership, not by ``.loc``. With a duplicated index label
+    ``.loc`` returns every matching row *per occurrence in the subset*, which
+    multiplies rows; membership returns each matching row once, in the frame's
+    own order. That keeps a positionally-aligned external ``groups`` array
+    aligned, which ``.loc`` does not.
+
+    Returns a sorted array of positions.
+    """
+    if subset is None:
+        return np.arange(len(data), dtype=np.intp)
+
+    if isinstance(subset, pd.Series) and subset.dtype == bool:
+        if not subset.index.equals(data.index):
+            raise ValueError(
+                "a boolean `subset` Series must have the same index as `data`; "
+                "got an index of length "
+                f"{len(subset.index)} against {len(data.index)}. Pass a plain "
+                "array if you mean positional selection.")
+        return _nonempty(np.flatnonzero(subset.to_numpy()))
+
+    arr = np.asarray(subset)
+    if arr.dtype == bool:
+        if arr.ndim != 1 or arr.size != len(data):
+            raise ValueError(
+                f"a boolean `subset` must be one-dimensional with {len(data)} "
+                f"entries, one per row of `data`; got shape {arr.shape}")
+        return _nonempty(np.flatnonzero(arr))
+
+    if arr.ndim != 1:
+        raise ValueError(
+            f"`subset` must be one-dimensional; got shape {arr.shape}")
+    if arr.size == 0:
+        raise ValueError("`subset` selected no rows")
+
+    labels = pd.Index(arr)
+    missing = labels[~labels.isin(data.index)]
+    if len(missing):
+        shown = list(dict.fromkeys(missing.tolist()))[:5]
+        raise ValueError(
+            f"`subset` contains {len(set(missing.tolist()))} label(s) that are "
+            f"not in the index of `data`: {shown}"
+            + (" ..." if len(set(missing.tolist())) > len(shown) else "")
+            + ". `subset` selects by index label, not by row position -- pass a "
+              "boolean mask if you meant positions.")
+
+    return _nonempty(np.flatnonzero(data.index.isin(labels)))
+
+
+def _nonempty(positions):
+    """An empty selection is a caller error, and must say so here.
+
+    Left to flow through, it reaches the design construction and surfaces as a
+    rank-deficiency error about the fixed effects, which names the wrong thing.
+    """
+    if positions.size == 0:
+        raise ValueError(
+            "`subset` selected no rows. Check the mask or the labels: an "
+            "empty selection cannot be fitted, and the error further down "
+            "would blame the design matrix instead.")
+    return positions
+
+
+def _align_groups(groups, data, positions):
+    """Resolve ``groups`` against ``data`` and apply the subset selection.
+
+    ``groups`` may be a column name, a Series, or an array. A Series is aligned
+    by *index* when its index matches the frame's, and positionally otherwise;
+    an array is positional. Either way it is resolved against the **unsubset**
+    frame and then subset alongside it, so a caller does not have to subset it
+    themselves and cannot half-subset it by accident.
+    """
+    if isinstance(groups, str):
+        if groups not in data.columns:
+            raise ValueError(
+                f"groups={groups!r} is not a column of `data`. Columns are: "
+                f"{list(data.columns)[:12]}")
+        return np.asarray(data[groups])[positions]
+
+    if isinstance(groups, pd.Series):
+        if groups.index.equals(data.index):
+            return np.asarray(groups.to_numpy())[positions]
+        if len(groups) == len(data):
+            return np.asarray(groups.to_numpy())[positions]
+        if len(groups) == len(positions):
+            # Already subset by the caller.
+            return np.asarray(groups.to_numpy())
+        raise ValueError(
+            f"groups has length {len(groups)}, which matches neither `data` "
+            f"({len(data)} rows) nor the subset selection ({len(positions)} "
+            "rows)")
+
+    arr = np.asarray(groups)
+    if arr.ndim != 1:
+        raise ValueError(
+            f"groups must be one-dimensional, got shape {arr.shape}")
+    if arr.size == len(data):
+        return arr[positions]
+    if arr.size == len(positions):
+        return arr
+    raise ValueError(
+        f"groups has length {arr.size}, which matches neither `data` "
+        f"({len(data)} rows) nor the subset selection ({len(positions)} rows)")
+
+
 def _group_is_present(groups):
     """Row mask for group labels that are actually observed.
 
@@ -397,26 +582,20 @@ class MixedLM:
             # resolves the way it does in statsmodels.
             eval_env = EvalEnvironment.capture(eval_env + 1)
 
-        # Alignment is positional throughout. `.loc`-based alignment silently
-        # multiplies rows when the frame has duplicate index labels, and breaks
-        # outright when `groups` is an external Series whose index is the
-        # unsubset one.
+        # `subset` and `groups` are resolved together against the *unsubset*
+        # frame, so the two can never end up half-aligned. Everything after
+        # this point is positional: `.loc`-based alignment multiplies rows on a
+        # frame with duplicate index labels, and breaks outright when `groups`
+        # is an external Series carrying the unsubset index.
         data = pd.DataFrame(data) if not isinstance(data, pd.DataFrame) else data
-        if subset is not None:
-            sub = np.asarray(subset)
-            mask = sub if sub.dtype == bool else np.isin(np.arange(len(data)), sub)
-            if not isinstance(groups, str) and len(np.asarray(groups)) == len(data):
-                groups = np.asarray(groups)[mask]
-            data = data.iloc[mask]
+        positions = _subset_positions(data, subset)
+        groups_arr = _align_groups(groups, data, positions)
+        data = data.iloc[positions]
 
-        if isinstance(groups, str):
-            groups_arr = np.asarray(data[groups])
-        else:
-            groups_arr = np.asarray(groups)
-        if len(groups_arr) != len(data):
+        if len(groups_arr) != len(data):          # unreachable; kept as a guard
             raise ValueError(
-                f"groups has length {len(groups_arr)} but data has "
-                f"{len(data)} rows")
+                f"groups has length {len(groups_arr)} but the selected data "
+                f"has {len(data)} rows")
 
         # Work on a positional index so patsy's NA handling and the group array
         # can be re-aligned by position rather than by label.
@@ -489,21 +668,16 @@ class MixedLM:
                 UserWarning, stacklevel=2)
 
         self.reml = bool(reml)
-        # Left to the driver, which picks per optimiser: 1 for scipy's
-        # L-BFGS-B and 5 for the in-crate one. Both are measured; see the note
-        # in _fit.fit_core.
-        n_starts = fit_kwargs.pop("n_starts", None)
-        n_starts = None if n_starts is None else int(n_starts)
+
+        # Everything is validated before the optimiser starts. Rejecting a
+        # typo'd keyword *after* the fit -- which is what this used to do --
+        # means a caller waits out a full optimisation to be told the argument
+        # they passed was never read.
+        opts = _validate_fit_options(fit_kwargs)
+
         res = fit_core(self.endog, self.exog, self.exog_re, self._codes,
                        self.n_groups, reml=reml, start_params=theta0,
-                       method=method, n_starts=n_starts,
-                       maxiter=int(fit_kwargs.pop("maxiter", 500)),
-                       gtol=float(fit_kwargs.pop("gtol", 1e-8)),
-                       ftol=float(fit_kwargs.pop("ftol", 1e-12)))
-        if fit_kwargs:
-            raise TypeError(
-                "unexpected keyword argument(s) for fit: "
-                + ", ".join(sorted(fit_kwargs)))
+                       method=method, **opts)
         return MixedLMResults(self, res)
 
     def _start_theta(self, start_params, use_sqrt=True):
