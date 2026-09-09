@@ -1,7 +1,7 @@
 {
- "recorded_at": "2026-09-09T22:31:29",
+ "recorded_at": "2026-09-09T22:43:35",
  "environment": {
-  "commit": "39f545a7e49020342c82a08e27b48177d3e65c99",
+  "commit": "f925ebfb41148a28deff580d93172558619b7347",
   "working_tree_dirty": false,
   "mixedlm_rs": "0.1.0",
   "python": "3.14.3",
@@ -16,17 +16,17 @@
    "patsy": "1.0.3",
    "statsmodels": "0.15.0"
   },
-  "extension_path": "C:\\Users\\Fatin\\AppData\\Roaming\\Python\\Python314\\site-packages\\mixedlm_rs\\_mixedlm_rs.pyd",
+  "extension_name": "mixedlm_rs/_mixedlm_rs.pyd",
   "extension_sha256": "b3f3b7cdf58aa5c62cfd08c7859bf69b06f690065d7ebf1a7cdbe810b59218c1",
   "extension_bytes": 359424,
-  "package_path": "C:\\Users\\Fatin\\AppData\\Local\\Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Roaming\\Python\\Python314\\site-packages\\mixedlm_rs",
+  "package_location": "site-packages/mixedlm_rs",
   "imported_from_checkout": false
  },
  "differential": {
   "cases": 120,
   "seed_base": 10000,
   "generator": "tests/test_fuzz.py::random_case",
-  "seconds": 66.23767750000025,
+  "seconds": 61.2786744999994,
   "counts": {
    "reference did not converge": 26,
    "we found a better optimum": 42,
@@ -44,7 +44,7 @@
   "cases": 400,
   "seed": 0,
   "generator": "bench/stress_sweep.py::make_case",
-  "seconds": 175.7470874999999,
+  "seconds": 176.64444750000075,
   "counts": {
    "same optimum": 167,
    "reference did not converge": 99,
@@ -89,9 +89,9 @@
  "suites": {
   "pytest": {
    "returncode": 0,
-   "summary": "569 passed, 4 skipped in 114.99s (0:01:54)",
-   "collected": 573,
-   "passed": 569,
+   "summary": "570 passed, 4 skipped in 102.94s (0:01:42)",
+   "collected": 574,
+   "passed": 570,
    "skipped": 4
   },
   "cargo": {

@@ -5,8 +5,8 @@
 **`lmer` for Python.**
 Linear mixed-effects models with `lme4` speed, the `statsmodels` API, and no R required.
 
-[![PyPI](https://img.shields.io/pypi/v/mixedlm-rs.svg)](https://pypi.org/project/mixedlm-rs/)
-[![Python](https://img.shields.io/badge/python-3.10%20–%203.14-blue.svg)](https://pypi.org/project/mixedlm-rs/)
+[![CI](https://github.com/Fatin-Ishraq/mixedlm-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/Fatin-Ishraq/mixedlm-rs/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10%20–%203.14-blue.svg)](https://github.com/Fatin-Ishraq/mixedlm-rs)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 </div>
@@ -25,20 +25,24 @@ linguistics, education research, pharmacology.
 Python's implementation has been the weak link. This is a drop-in replacement
 for it.
 
+**Not on PyPI yet.** Build it from a checkout — you need a Rust toolchain:
+
 ```bash
-pip install mixedlm-rs
+git clone https://github.com/Fatin-Ishraq/mixedlm-rs
+cd mixedlm-rs
+pip install maturin && maturin build --release --out dist
+pip install --find-links dist mixedlm-rs
 ```
 
-The build is `abi3`, so one wheel per platform covers Python 3.10–3.14 and
-there is nothing to compile unless you want to.
+The build is `abi3`, so one wheel per platform will cover Python 3.10–3.14 once
+these are published, and there will be nothing to compile.
 
 **Currently verified:** the Windows x86-64 wheel and the sdist, both built and
 installed into clean environments outside the source tree
-(`python scripts/verify_release.py`). The Linux and macOS wheels are produced by
-the same `maturin` configuration and their CI jobs are written, but those jobs
-have not run yet — this project has no remote. Until they do, treat non-Windows
-wheels as expected to work rather than as tested, and build from source
-(`pip install mixedlm-rs --no-binary mixedlm-rs`) if you need certainty.
+(`python scripts/verify_release.py`, 69/69 checks). The Linux and macOS wheels
+come out of the same `maturin` configuration and their CI jobs are written; read
+the CI badge above for whether those jobs have gone green. Until they have,
+treat non-Windows wheels as expected to work rather than as tested.
 
 ```python
 import pandas as pd
