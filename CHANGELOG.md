@@ -59,6 +59,82 @@ Not implemented, and raising rather than ignored: variance components
 `profile_re`, `bootstrap`, `get_distribution`. GLMMs are out of scope. See
 `docs/LIMITATIONS.md`.
 
+### Release readiness
+
+A second pass over the package as a shipped artifact rather than as an
+algorithm. The theme is that a claim needs a check behind it, or it should not
+be a claim.
+
+**Correctness of the supported family**
+
+- **`subset` selects by index label**, which is pandas' and statsmodels'
+  meaning. It treated a non-boolean subset as row *positions*, so
+  `subset=[10, 20]` on a frame indexed 100..199 quietly selected rows 10 and 20
+  instead of raising, and on a string-labelled frame selected nothing.
+  Selection is now by membership rather than `.loc`, so a duplicated index
+  label returns each matching row once and an externally supplied `groups`
+  stays aligned. `subset` and `groups` are resolved together against the
+  unsubset frame, so they cannot end up half-aligned.
+- **`fit()` validates its arguments before the optimiser runs.** Unknown
+  keywords were rejected *after* the fit, so a caller waited out a full
+  optimisation to be told the keyword was never read; tolerances, iteration
+  counts and start counts were not checked at all. The tests time the
+  rejection against a real fit, so "before the optimiser" is under test.
+- **`method="rust"` is experimental** and warns. A sweep of all 120 fuzz seeds
+  found it reaching a criterion 649 and 704 deviance units worse than the
+  default path on seeds 32 and 54; both are kept as regression fixtures. It
+  reports `converged=False` and warns, but — as with `statsmodels` — it still
+  returns the estimate, and the documentation now says so.
+- **`results.diagnostics`** carries what a failed fit needs to leave behind:
+  optimiser, projected gradient, the tolerance required, evaluations,
+  iterations, starts, and the optimiser's message.
+- **Formula prediction survives `save`/`load`.** patsy cannot pickle a
+  `DesignInfo`, so it is rebuilt from the frame the model was fitted on, which
+  is what reproduces the state its transforms learned. `save(with_data=False)`
+  drops that frame, and the error then names the real cause — it previously
+  advised passing raw new data, which is exactly what had just failed.
+
+**What is promised**
+
+- **`docs/COMPATIBILITY.md`** replaces "change the import, that is the whole
+  migration". Four sections — compatible, different type or coordinates,
+  unsupported and raising, additions — produced by diffing the two results
+  objects rather than from memory, and pinned by 72 tests that assert both
+  halves of each claim.
+
+**Evidence**
+
+- **`bench/baseline.json`** is one recorded run — commit, environment, seeds,
+  counts, individual losses, warning categories — and `tests/test_baseline.py`
+  checks the documents against it. The 120-fixture counts had drifted to
+  disagree across three documents (19/75 in one, 42/52 in two).
+- **`tests/test_dense_reference.py`** checks the block-diagonal Cholesky
+  against a dense implementation of the same criterion that shares no code
+  with it, including the gradient by differencing the dense form.
+- **`tests/test_review_regressions.py`** pins each specific wrong answer the
+  review found, with the old behaviour written down.
+- Benchmarks share `bench/tolerances.py`; the staged one no longer gates on a
+  relative tolerance over a criterion carrying an arbitrary additive constant.
+
+**Supply chain and platforms**
+
+- **PyO3 0.23.5 → 0.29.2, rust-numpy 0.23 → 0.29**, clearing two RustSec
+  advisories against the locked graph. `cargo audit` and `pip-audit` run in CI
+  and fail the build; `SECURITY.md` records a reachability assessment for
+  anything that remains.
+- **The declared Rust floor was 1.74 and was wrong by nine minor versions.**
+  pyo3 and numpy require 1.83, rayon 1.80. Raised to 1.83 and built with it.
+- The Python floor job pinned `numpy==1.23.*`, which tests a release series
+  rather than the advertised minimum; it now pins exact versions.
+- **Typing is checked rather than counted.** `typing.get_type_hints()` failed
+  on 18 members because `ArrayLike` was imported under `TYPE_CHECKING`;
+  `mypy --strict` now accepts a representative-usage file in CI, and the
+  compiled module has a stub.
+- **`scripts/verify_release.py`** builds both artifacts, installs the exact
+  wheel into a clean venv outside the checkout, rebuilds a wheel from the
+  unpacked sdist, and runs the documented example, numerical smoke tests and
+  save/load against each.
+
 ### Fixed before release, following an external review
 
 The review is worth recording, because most of these were wrong answers rather
