@@ -18,11 +18,10 @@ Two real defects lived here:
 
 import warnings
 
+import mixedlm_rs as mlm
 import numpy as np
 import pandas as pd
 import pytest
-
-import mixedlm_rs as mlm
 
 
 def fixture(seed=7, m=20, nper=10):
