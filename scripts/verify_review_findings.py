@@ -118,6 +118,7 @@ def require_prerequisites() -> None:
             + "\n  - ".join(missing))
 
 
+EN_DASH = "\u2013"
 RESULTS: list[tuple[str, str, bool, str]] = []
 
 
@@ -884,10 +885,15 @@ def s8():
         analytic.append(int(cells[3]))
     want_n = f"{min(numeric)}\u2013{max(numeric)}"
     want_a = f"{min(analytic)}\u2013{max(analytic)}"
-    readme = read(ROOT / "README.md")
-    ok = (want_n in readme and want_a in readme
-          and "44\u201380" not in readme and "11\u201316" not in readme)
-    return ok, f"README quotes the measured {want_n} to {want_a}"
+    stale = []
+    for name in ("README.md", "CHANGELOG.md", "docs/DESIGN.md"):
+        text = read(ROOT / name)
+        if want_n not in text or want_a not in text:
+            stale.append(f"{name} does not quote {want_n}/{want_a}")
+        if EN_DASH.join(("44", "80")) in text or EN_DASH.join(("11", "16")) in text:
+            stale.append(f"{name} still quotes the superseded range")
+    return not stale, (f"3 documents quote the measured {want_n} to {want_a}"
+                       if not stale else "; ".join(stale))
 
 
 def s9():

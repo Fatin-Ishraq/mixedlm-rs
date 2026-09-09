@@ -14,7 +14,7 @@ First release. Linear mixed-effects models with one grouping factor, matching
   the largest single contributor to the speed, by a wide margin.
 - **Analytic gradient** of the profiled criterion, which `lme4` and
   `MixedModels.jl` do not use (both optimise derivative-free with BOBYQA). Cuts
-  objective evaluations from 44–80 to 11–16 against this package's own
+  objective evaluations from 44–64 to 11–13 against this package's own
   finite-difference stage, and is verified against central finite differences
   over the full product of `q = 1..3`, `p = 1,2,5,10`, both criteria, and the
   variance-zero boundary.

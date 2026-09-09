@@ -437,12 +437,13 @@ class TestBenchmarkClaims:
         table = _bench_evaluation_table()
         numeric = f"{min(table['numeric'])}–{max(table['numeric'])}"
         analytic = f"{min(table['analytic'])}–{max(table['analytic'])}"
-        readme = (ROOT / "README.md").read_text("utf-8")
-        assert numeric in readme and analytic in readme, (
-            f"README should quote {numeric} to {analytic} from the measured "
-            "table in docs/BENCHMARKS.md")
-        for stale in ("44–80", "11–16"):
-            assert stale not in readme, f"README still quotes {stale}"
+        for name in ("README.md", "CHANGELOG.md", "docs/DESIGN.md"):
+            text = (ROOT / name).read_text("utf-8")
+            assert numeric in text and analytic in text, (
+                f"{name} should quote {numeric} to {analytic} from the "
+                "measured table in docs/BENCHMARKS.md")
+            for stale in ("44–80", "11–16"):
+                assert stale not in text, f"{name} still quotes {stale}"
 
 
 def _bench_evaluation_table():
