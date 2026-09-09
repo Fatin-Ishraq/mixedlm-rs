@@ -164,19 +164,39 @@ def stress(cases: int, seed: int) -> dict:
 
 
 def suites() -> dict:
-    """pytest and cargo, so the recorded counts come from a run too."""
+    """pytest and cargo, so the recorded counts come from a run too.
+
+    The *collected* count is what gets recorded and quoted, not the number
+    that passed. How many pass depends on how many skip, and that depends on
+    the environment -- statsmodels present or not, the lme4 fixtures present
+    or not, mypy installed or not. A documented pass count therefore drifts
+    for reasons that have nothing to do with the code, which is exactly the
+    kind of unfalsifiable number this file exists to eliminate.
+    """
+    import re
+
     out = {}
     p = subprocess.run([sys.executable, "-m", "pytest", "tests/", "-q",
                         "--no-header"], cwd=ROOT, capture_output=True,
                        text=True)
-    out["pytest"] = {"returncode": p.returncode,
-                     "summary": p.stdout.strip().splitlines()[-1]
-                     if p.stdout.strip() else ""}
+    summary = p.stdout.strip().splitlines()[-1] if p.stdout.strip() else ""
+    tally = {kind: int(n) for n, kind in
+             re.findall(r"(\d+) (passed|failed|skipped|xfailed|xpassed|error)",
+                        summary)}
+    out["pytest"] = {
+        "returncode": p.returncode,
+        "summary": summary,
+        "collected": sum(tally.values()),
+        **tally,
+    }
+
     c = subprocess.run(["cargo", "test", "--lib", "-q"], cwd=ROOT,
                        capture_output=True, text=True)
     line = [ln for ln in c.stdout.splitlines() if "test result" in ln]
-    out["cargo"] = {"returncode": c.returncode,
-                    "summary": line[-1].strip() if line else ""}
+    csum = line[-1].strip() if line else ""
+    match = re.search(r"(\d+) passed", csum)
+    out["cargo"] = {"returncode": c.returncode, "summary": csum,
+                    "collected": int(match.group(1)) if match else 0}
     return out
 
 

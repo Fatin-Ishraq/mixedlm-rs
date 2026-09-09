@@ -255,22 +255,41 @@ def test_the_number_of_losses_matches(baseline):
 
 # -------------------------------------------------------------- suite counts
 def test_documented_test_counts_match_the_recorded_run(baseline):
+    """The documented figure is the *collected* count, not the pass count.
+
+    How many tests pass depends on how many skip, and that depends on the
+    environment: statsmodels present or not, the lme4 fixtures present or not,
+    mypy installed or not. Two runs of the same commit here gave 518 passed /
+    1 skipped and 516 passed / 3 skipped -- 519 collected either way. Quoting
+    the pass count would make the documentation drift for reasons that have
+    nothing to do with the code.
+    """
     if "suites" not in baseline:
         pytest.skip("baseline recorded with --skip-suites")
-    summary = baseline["suites"]["pytest"]["summary"]
-    match = re.search(r"(\d+) passed", summary)
-    assert match, f"could not read a pass count from {summary!r}"
-    passed = int(match.group(1))
+    collected = baseline["suites"]["pytest"].get("collected")
+    if collected is None:
+        pytest.skip("baseline predates the collected-count record")
 
     for name, path in DOCS.items():
         text = path.read_text(encoding="utf-8")
         for quoted in re.findall(r"\*\*(\d+) Python tests", text):
-            assert int(quoted) == passed, (
-                f"{name} says {quoted} Python tests; the recorded run has "
-                f"{passed}")
+            assert int(quoted) == collected, (
+                f"{name} says {quoted} Python tests; the recorded run "
+                f"collected {collected}")
         for quoted in re.findall(r"pytest tests/ -q\s+# (\d+) tests", text):
-            assert int(quoted) == passed, (
-                f"{name} says {quoted} tests; the recorded run has {passed}")
+            assert int(quoted) == collected, (
+                f"{name} says {quoted} tests; the recorded run collected "
+                f"{collected}")
+
+
+def test_the_recorded_run_had_no_failures(baseline):
+    if "suites" not in baseline:
+        pytest.skip("baseline recorded with --skip-suites")
+    tally = baseline["suites"]["pytest"]
+    assert tally.get("failed", 0) == 0, (
+        f"the recorded run had {tally['failed']} failure(s); a baseline from "
+        "a failing run is not a baseline")
+    assert tally.get("error", 0) == 0
 
 
 def test_the_recorded_suites_passed(baseline):
