@@ -1,5 +1,10 @@
 # Limitations
 
+For the attribute-by-attribute migration contract -- what is compatible, what
+returns a different type, and what raises -- see
+[COMPATIBILITY.md](COMPATIBILITY.md). This page is the *scope*: what the
+package does not model, and what its numbers do and do not cover.
+
 Stated plainly, because a drop-in that hides its gaps is worse than one that
 does not have them. Everything below either raises `NotImplementedError`, is
 documented as accepted-and-ignored with a warning, or is named here as a known

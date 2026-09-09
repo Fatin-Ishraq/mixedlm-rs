@@ -69,7 +69,7 @@ statsmodels prints them, so the two summaries are directly comparable.
 
 ## Already using statsmodels?
 
-Change the import. That is the whole migration.
+For most code, changing the import is the whole migration.
 
 ```diff
 - from statsmodels.regression.mixed_linear_model import MixedLM
@@ -77,6 +77,22 @@ Change the import. That is the whole migration.
 ```
 
 Same classes, same arguments, same `params` packing, same `summary()` layout.
+
+**Three things decide whether that holds for you**, and it is worth two minutes
+to check rather than finding out later:
+
+1. **One grouping factor.** Crossed or nested random effects — two `(...|...)`
+   terms — are not supported and raise. This is the biggest gap in the package.
+2. **Result containers are ndarrays, not Series.** `result.fe_params["x"]`
+   raises; `result.fe_params[1]` works. Use `params_labelled` or
+   `param_names` for name-based access.
+3. **Some methods are absent**, including `summary().tables` / `.as_html()`,
+   `wald_test_terms`, `t_test_pairwise` and the `bsejac` family.
+
+Everything else — every attribute, every type difference, every method that
+raises and why — is enumerated in
+**[the compatibility contract](docs/COMPATIBILITY.md)**, which was produced by
+diffing the two results objects rather than from memory.
 
 If you cannot edit the code that imports it — someone else's library, a notebook
 you were handed:
