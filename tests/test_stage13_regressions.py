@@ -129,12 +129,52 @@ class TestGroupAlignment:
         aligned = _mlm._align_groups(plain, data, positions)
         assert np.array_equal(aligned, np.asarray(data["g"])[positions])
 
+    def test_a_bare_positional_series_over_a_subset_still_works(self):
+        """The fix for the shuffled case must not break the ordinary one.
+
+        A 50-element `pd.Series(arr)` alongside a 100-row frame carries a
+        `RangeIndex(0, 50)`, which *is* a subset of that frame's
+        `RangeIndex(0, 100)`. Reading it as labels selects rows 0-49 -- or,
+        when the selection is rows 50-99, raises on input that was always
+        valid. A default RangeIndex is not a statement of intent, so it is
+        aligned by position.
+        """
+        data = clustered(n=100, m=10).reset_index(drop=True)
+        mask = np.arange(100) >= 50
+        want = mlm.MixedLM.from_formula("y ~ x", data, groups="g",
+                                        subset=mask).fit()
+        bare = pd.Series(np.asarray(data["g"])[mask])
+        got = mlm.MixedLM.from_formula("y ~ x", data, groups=bare,
+                                       subset=mask).fit()
+        assert float(got.llf) == pytest.approx(float(want.llf), rel=1e-12)
+
+    def test_a_labelled_series_over_the_same_subset_aligns_by_label(self):
+        """The other half of the pair, so the two rules cannot be confused."""
+        data = clustered(n=100, m=10).reset_index(drop=True)
+        mask = np.arange(100) >= 50
+        want = mlm.MixedLM.from_formula("y ~ x", data, groups="g",
+                                        subset=mask).fit()
+        labelled = data.loc[mask, "g"].sample(frac=1.0, random_state=1)
+        got = mlm.MixedLM.from_formula("y ~ x", data, groups=labelled,
+                                       subset=mask).fit()
+        assert float(got.llf) == pytest.approx(float(want.llf), rel=1e-12)
+
     def test_a_plain_array_is_still_positional(self):
         data = clustered(n=60, m=6)
         positions = _mlm._subset_positions(data, data.index[:30])
         arr = np.asarray(data["g"])
         assert np.array_equal(_mlm._align_groups(arr, data, positions),
                               arr[positions])
+
+    def test_the_contract_is_documented(self):
+        """The reviewer asked for the contract to be defined, not just fixed."""
+        text = (ROOT / "docs" / "COMPATIBILITY.md").read_text("utf-8")
+        assert "How `groups` and `subset` are aligned" in text
+        for rule in ("**index label**", "**position**",
+                     "default `RangeIndex`"):
+            assert rule in text, f"the contract does not state {rule}"
+        assert "statsmodels aligns a `groups` Series positionally" in text, (
+            "the difference from statsmodels is not disclosed")
 
     def test_a_non_unique_frame_index_is_rejected_for_a_series(self):
         data = clustered(n=40, m=4)

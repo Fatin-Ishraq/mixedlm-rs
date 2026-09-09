@@ -396,15 +396,17 @@ def _align_groups(groups, data, positions):
 
     ``groups`` may be a column name, a Series, or an array.
 
-    A **Series is aligned by index label** whenever its labels can address the
-    frame, which is what pandas itself would do and what the caller means when
-    they hand over a labelled object. Only a Series whose index carries no
-    information -- a default ``RangeIndex`` -- is aligned by position.
+    A **Series is aligned by index label** whenever its index carries meaning
+    and can address the frame, which is what pandas itself would do and what
+    the caller means when they hand over a labelled object. A Series whose
+    index carries no information -- a default ``RangeIndex`` -- is aligned by
+    position. Input that is neither is rejected rather than guessed at. See
+    :func:`_align_group_series` for why that order matters.
 
     Aligning a labelled Series positionally is a silent-wrong-answer bug: a
     caller who subsets and then sorts or shuffles their group Series gets a
     model fitted on scrambled cluster membership, which returns a plausible
-    number rather than an error. Input we cannot resolve is rejected instead.
+    number rather than an error.
 
     An array is positional; it has no labels to align by.
     """
@@ -434,16 +436,34 @@ def _align_groups(groups, data, positions):
 def _align_group_series(groups, data, positions):
     """Align a group Series to the selected rows of ``data``.
 
-    The order of these branches is the whole point. Label alignment is tried
-    first and positional alignment is a narrow fallback, because the failure
-    mode of getting this backwards is silent.
-    """
-    selected = data.index[positions]
+    The order of these branches is the whole point, and it is not the obvious
+    order. Position is tried first, but *only* for an index that carries no
+    information; everything else is aligned by label.
 
+    A default ``RangeIndex`` is what a Series built from a bare array has, so
+    its labels say nothing the position does not. Treating those as labels
+    breaks the ordinary positional call: a 50-element ``pd.Series(arr)`` handed
+    alongside a 100-row frame has a ``RangeIndex(0, 50)``, which *is* a subset
+    of that frame's ``RangeIndex(0, 100)`` and would silently be read as
+    selecting rows 0-49.
+
+    Any other index is the caller saying which rows the values belong to, and
+    aligning that positionally is a silent-wrong-answer bug: a caller who
+    subsets and then sorts or shuffles their group Series gets a model fitted
+    on scrambled cluster membership, which returns a plausible number rather
+    than an error. Input that is neither is rejected.
+    """
     if groups.index.equals(data.index):
         # Same labels in the same order: position and label agree.
         return np.asarray(groups.to_numpy())[positions]
 
+    # An uninformative index: align by position, as the caller meant.
+    for length, subset_after in ((len(data), True), (len(positions), False)):
+        if len(groups) == length and _index_is_positional(groups.index, length):
+            values = np.asarray(groups.to_numpy())
+            return values[positions] if subset_after else values
+
+    selected = data.index[positions]
     label_addressable = (
         data.index.is_unique
         and groups.index.is_unique
@@ -457,18 +477,14 @@ def _align_group_series(groups, data, positions):
                 f"`groups` is missing {len(absent)} of the {len(selected)} "
                 f"selected row label(s), for example {shown}"
                 + (" ..." if len(absent) > len(shown) else "")
-                + ". A group Series is aligned to `data` by index label; "
-                  "every selected row needs a group.")
+                + ". A group Series carrying a meaningful index is aligned to "
+                  "`data` by that index, and every selected row needs a "
+                  "group. Pass a plain array if you meant row order.")
         return np.asarray(groups.reindex(selected).to_numpy())
 
-    # The labels cannot address the frame. Fall back to position only when the
-    # index says nothing -- otherwise we would be discarding labels the caller
-    # meant, which is exactly the bug this function exists to prevent.
-    for length, take in ((len(data), True), (len(positions), False)):
-        if len(groups) == length and _index_is_positional(groups.index, length):
-            values = np.asarray(groups.to_numpy())
-            return values[positions] if take else values
-
+    # Neither addressable by label nor positional. Falling back to row order
+    # here would discard labels the caller meant, which is the bug this
+    # function exists to prevent, so say what is wrong instead.
     if not data.index.is_unique:
         raise ValueError(
             "`data` has a non-unique index, so a `groups` Series cannot be "

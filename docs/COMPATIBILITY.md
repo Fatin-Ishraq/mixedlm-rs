@@ -119,6 +119,36 @@ and `fit(...)` raise `TypeError` **before** the optimiser runs.
 
 ---
 
+### How `groups` and `subset` are aligned
+
+This is stated explicitly because getting it wrong is silent. A group vector
+that does not correspond to the rows it is fitted against produces a plausible
+number, not an error.
+
+`subset` selects **by index label**, or by position if you pass a boolean mask
+of `len(data)`. `groups` is resolved against the *unsubset* frame and subset
+alongside it, so you never have to subset it yourself and cannot half-subset it
+by accident.
+
+| `groups` is | aligned by | notes |
+|---|---|---|
+| a column name | -- | read from `data`, then subset |
+| a Series indexed like `data` | position and label agree | |
+| a Series with any other meaningful index | **index label** | may be pre-subset, reordered, or carry the full index; every selected row must have a label |
+| a Series with a default `RangeIndex` | **position** | a bare `pd.Series(array)` says nothing beyond row order; length must match `data` or the selection |
+| an array | **position** | length must match `data` or the selection |
+
+Anything else raises: duplicate labels in `groups`, labels absent from
+`data.index`, a non-unique `data.index` with a labelled Series, or a length
+matching neither the frame nor the selection. There is deliberately no
+best-effort fallback -- a `groups` argument that cannot be resolved
+unambiguously is a question, not a default.
+
+statsmodels aligns a `groups` Series positionally in all cases. If you relied
+on that with a reordered, meaningfully-indexed Series, you were fitting a
+different model than you thought; pass `np.asarray(groups)` to keep the old
+behaviour explicitly.
+
 ## 4. Additions
 
 Not in `statsmodels`, so nothing depends on them, but they are the reason some

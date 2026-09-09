@@ -82,6 +82,19 @@ reachable from any code path in this package, and upgrading them changes
 nothing about it. This is why the CI job audits the declared dependency set
 rather than whatever is installed alongside it.
 
+### What the Python audit does not cover
+
+`pip-audit --requirement requirements-runtime.txt` resolves each specifier to
+the version the resolver picks *today*, which is the newest one satisfying it.
+It therefore says nothing about the older versions the lower bounds also permit:
+`numpy>=1.23` allows 1.23.0, and a clean audit of the resolved set is not a
+statement about that release. The floors are separately verified to *work* --
+the full suite runs against exactly `numpy==1.23.0`, `scipy==1.9.0`,
+`pandas==1.5.0`, `patsy==0.5.3` on Python 3.10 in the `minimum-versions` CI job
+-- but "works" and "carries no known advisory" are different claims and only
+the first is made for them. If you need the floors audited, pin them and run
+`pip-audit` against that pinned set.
+
 If a future advisory does land on a real dependency, the same standard applies:
 record which entry point reaches the affected code, or state that none does.
 
