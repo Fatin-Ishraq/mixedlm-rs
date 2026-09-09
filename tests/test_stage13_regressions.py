@@ -12,6 +12,7 @@ the test says *why* the value is right.
 
 from __future__ import annotations
 
+import os
 import pathlib
 import pickle
 import subprocess
@@ -416,8 +417,24 @@ class TestRedistributionNotices:
         text = (ROOT / "THIRD-PARTY-LICENSES.md").read_text("utf-8")
         assert f"## {crate} " in text
 
+    @pytest.mark.skipif(
+        os.environ.get("MIXEDLM_CHECK_NOTICES") != "1",
+        reason="regeneration depends on the cargo registry cache, not on the "
+               "repository; the CI lint job runs `cargo fetch` first and sets "
+               "MIXEDLM_CHECK_NOTICES=1")
     def test_the_generator_is_reproducible(self):
-        """A committed notice file that nothing regenerates goes stale."""
+        """A committed notice file that nothing regenerates goes stale.
+
+        Opt-in, because what it checks is not a property of the repository:
+        the generator reads the crate sources out of the local cargo registry,
+        and which crates are vendored there depends on what has been built on
+        that machine. Run unguarded, it failed the entire test matrix for an
+        environment difference while the committed file was correct.
+
+        The repository-level invariants -- that the file carries the real
+        upstream text for every linked crate, and that the wheel ships it --
+        are checked unconditionally by the other tests in this class.
+        """
         result = subprocess.run(
             [sys.executable, "scripts/collect_notices.py", "--check"],
             cwd=ROOT, capture_output=True, text=True)

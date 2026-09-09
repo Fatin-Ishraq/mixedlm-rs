@@ -144,8 +144,19 @@ def main() -> int:
     if args.check:
         current = OUT.read_text(encoding="utf-8") if OUT.exists() else ""
         if current != text:
+            # Say *what* differs. "is stale" alone sent a CI failure back with
+            # nothing to act on, and the cause turned out to be the generator
+            # reading a different crate set rather than the file being old.
+            import difflib
+            diff = list(difflib.unified_diff(
+                current.splitlines(), text.splitlines(),
+                fromfile=f"{OUT.name} (committed)",
+                tofile=f"{OUT.name} (regenerated here)", lineterm="", n=1))
             print(f"{OUT.name} is stale; run `python scripts/collect_notices.py`",
                   file=sys.stderr)
+            print(f"{len(diff)} diff lines; first 40:", file=sys.stderr)
+            for line in diff[:40]:
+                print("  " + line, file=sys.stderr)
             return 1
         print(f"{OUT.name} is up to date")
         return 0

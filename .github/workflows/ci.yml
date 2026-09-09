@@ -42,6 +42,8 @@ jobs:
         run: cargo fetch
       - name: Upstream licence texts are current
         run: python scripts/collect_notices.py --check
+        env:
+          MIXEDLM_CHECK_NOTICES: "1"
 
   test:
     name: test ${{ matrix.os }} / py${{ matrix.python }}
