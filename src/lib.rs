@@ -63,6 +63,34 @@ impl LmmCore {
         if m == 0 {
             return Err(PyValueError::new_err("n_groups must be positive"));
         }
+        // A zero-width design reaches a zero-size rayon chunk downstream, and a
+        // q of zero makes `theta` empty, which every evaluate() path then
+        // indexes. Both used to abort the process rather than raise, because
+        // this crate is built with panic="abort". Refuse them at the boundary.
+        if p == 0 {
+            return Err(PyValueError::new_err(
+                "X must have at least one column",
+            ));
+        }
+        if q == 0 {
+            return Err(PyValueError::new_err(
+                "Z must have at least one column",
+            ));
+        }
+        if n == 0 {
+            return Err(PyValueError::new_err("y must not be empty"));
+        }
+        // m * q * p is the largest buffer; on a 32-bit usize a big model could
+        // wrap and under-allocate. Check rather than trust.
+        let too_big = m
+            .checked_mul(q)
+            .and_then(|v| v.checked_mul(p.max(q)))
+            .is_none();
+        if too_big {
+            return Err(PyValueError::new_err(
+                "model dimensions overflow the address space",
+            ));
+        }
 
         let mut xtx = vec![0.0; p * p];
         let mut xty = vec![0.0; p];
@@ -140,13 +168,18 @@ impl LmmCore {
     }
 
     /// Profiled deviance at `theta`. Returns `inf` for an infeasible `theta`.
+    ///
+    /// A `theta` of the wrong length is a caller error, not an infeasible
+    /// point: too short used to index out of bounds and abort the process,
+    /// too long used to silently ignore the tail.
     #[pyo3(signature = (theta, reml=true))]
-    fn deviance(&self, py: Python<'_>, theta: Vec<f64>, reml: bool) -> f64 {
-        py.allow_threads(|| {
+    fn deviance(&self, py: Python<'_>, theta: Vec<f64>, reml: bool) -> PyResult<f64> {
+        self.check_theta(&theta)?;
+        Ok(py.allow_threads(|| {
             evaluate(&self.data, &theta, reml, false)
                 .map(|e| e.deviance)
                 .unwrap_or(f64::INFINITY)
-        })
+        }))
     }
 
     /// Profiled deviance and its analytic gradient at `theta`.
@@ -156,12 +189,13 @@ impl LmmCore {
         py: Python<'_>,
         theta: Vec<f64>,
         reml: bool,
-    ) -> (f64, Vec<f64>) {
+    ) -> PyResult<(f64, Vec<f64>)> {
+        self.check_theta(&theta)?;
         let nth = n_theta(self.data.q);
-        py.allow_threads(|| match evaluate(&self.data, &theta, reml, true) {
+        Ok(py.allow_threads(|| match evaluate(&self.data, &theta, reml, true) {
             Some(e) => (e.deviance, e.grad),
             None => (f64::INFINITY, vec![f64::NAN; nth]),
-        })
+        }))
     }
 
     /// Lower bounds on `theta`: diagonal entries >= 0, off-diagonals free.
@@ -196,6 +230,11 @@ impl LmmCore {
         ftol: f64,
     ) -> PyResult<Py<PyDict>> {
         let nth = n_theta(self.data.q);
+        if let Some(pos) = starts.iter().position(|v| !v.is_finite()) {
+            return Err(PyValueError::new_err(format!(
+                "starts[{pos}] is not finite"
+            )));
+        }
         if nth == 0 || starts.is_empty() || starts.len() % nth != 0 {
             return Err(PyValueError::new_err(
                 "starts must be a non-empty multiple of the theta length",
@@ -231,11 +270,31 @@ impl LmmCore {
     /// Every derived quantity at a given `theta`, without re-optimising.
     #[pyo3(signature = (theta, reml=true))]
     fn solution(&self, py: Python<'_>, theta: Vec<f64>, reml: bool) -> PyResult<Py<PyDict>> {
+        self.check_theta(&theta)?;
         self.solution_dict(py, &theta, reml, None)
     }
 }
 
 impl LmmCore {
+    /// `theta` must have exactly `q(q+1)/2` entries, all finite.
+    fn check_theta(&self, theta: &[f64]) -> PyResult<()> {
+        let nth = n_theta(self.data.q);
+        if theta.len() != nth {
+            return Err(PyValueError::new_err(format!(
+                "theta must have {} entries for q = {}, got {}",
+                nth,
+                self.data.q,
+                theta.len()
+            )));
+        }
+        if let Some(pos) = theta.iter().position(|v| !v.is_finite()) {
+            return Err(PyValueError::new_err(format!(
+                "theta[{pos}] is not finite"
+            )));
+        }
+        Ok(())
+    }
+
     fn solution_dict(
         &self,
         py: Python<'_>,

@@ -35,10 +35,13 @@ class VCSpec:
     raises ``NotImplementedError`` rather than silently fitting a different model.
     """
 
-    def __init__(self, names, mats, colnames=None):
-        self.names = list(names)
-        self.mats = list(mats)
+    def __init__(self, names, colnames, mats):
+        # Positional order follows statsmodels exactly -- (names, colnames,
+        # mats). This once read (names, mats, colnames), which silently swapped
+        # two of the three arguments for anyone constructing one positionally.
+        self.names = names
         self.colnames = colnames
+        self.mats = mats
 
 
 class MixedLMParams:
@@ -91,21 +94,41 @@ class MixedLMParams:
                 mat[r, c] = tri[k]
                 k += 1
         cov = mat @ mat.T if use_sqrt else mat + mat.T - np.diag(np.diag(mat))
+        # Variance components are stored as variances; under use_sqrt the packed
+        # vector holds their square roots, so square on the way in. Matching the
+        # reference here matters even though vcomp is always empty in this
+        # release: round-tripping a packed vector must be the identity.
+        vcomp = np.asarray(vcomp, float) ** 2 if use_sqrt else np.asarray(vcomp, float)
         return cls.from_components(fe_params=fe, cov_re=cov, vcomp=vcomp)
 
-    def get_packed(self, use_sqrt=True, has_fe=True):
+    def get_packed(self, use_sqrt=True, has_fe=False):
+        """Pack into statsmodels' layout.
+
+        ``has_fe`` defaults to False, as in the reference: the packed vector the
+        optimiser passes around is covariance-only.
+        """
         cov = np.asarray(self.cov_re, float)
         if use_sqrt and cov.size:
-            mat = np.linalg.cholesky(cov)
+            try:
+                mat = np.linalg.cholesky(cov)
+            except np.linalg.LinAlgError:
+                # A singular or indefinite covariance has no Cholesky factor.
+                # The reference falls back to the diagonal square root rather
+                # than raising, and callers rely on that for boundary fits,
+                # where an exactly-zero variance component is the common case.
+                mat = np.diag(np.sqrt(np.maximum(np.diag(cov), 0.0)))
         else:
             mat = cov
         tri = np.array([mat[r, c] for r in range(self.k_re) for c in range(r + 1)])
+        vcomp = np.asarray(self.vcomp, float)
+        if use_sqrt:
+            vcomp = np.sqrt(np.maximum(vcomp, 0.0))
         parts = []
         if has_fe:
             parts.append(np.asarray(self.fe_params, float))
         parts.append(tri)
-        parts.append(np.asarray(self.vcomp, float))
-        return np.concatenate([p for p in parts if p.size or True])
+        parts.append(vcomp)
+        return np.concatenate(parts) if parts else np.zeros(0)
 
     def copy(self):
         return MixedLMParams.from_components(
@@ -118,6 +141,83 @@ class MixedLMParams:
 def _vech_row(mat):
     k = mat.shape[0]
     return np.array([mat[r, c] for r in range(k) for c in range(r + 1)])
+
+
+def _designs(formula, re_formula, data, missing, eval_env):
+    """Build the fixed and random designs, dropping missing rows once.
+
+    Returns ``(y, X, Z, names, kept)`` where ``kept`` indexes the rows of
+    ``data`` that survived, so the group vector can be aligned by position.
+
+    patsy can drop rows for missing data, but it does not report which rows it
+    dropped, and the ``design_info`` it attaches to a DataFrame result does not
+    survive current pandas. So missingness is resolved here, once, across both
+    formulas: build on the complete cases and hand patsy data it never needs to
+    filter.
+    """
+    from patsy import PatsyError, dmatrices, dmatrix
+
+    def build(frame, na_action):
+        y, X = dmatrices(formula, frame, return_type="matrix",
+                         NA_action=na_action, eval_env=eval_env)
+        if y.shape[1] != 1:
+            # patsy happily builds a multi-column response for `y1 + y2 ~ x` or
+            # a categorical left-hand side, and taking column 0 would fit a
+            # different response than the one written. The reference rejects
+            # these; so do we.
+            raise ValueError(
+                f"the left-hand side of {formula!r} produced {y.shape[1]} "
+                "columns. A mixed model needs exactly one response; a "
+                "categorical or multi-column left-hand side is not supported.")
+        if re_formula is None or str(re_formula).strip() in ("1", "~1", ""):
+            Z, re_info, re_names = np.ones((y.shape[0], 1)), None, ["Group"]
+        else:
+            Zm = dmatrix(str(re_formula), frame, return_type="matrix",
+                         NA_action=na_action, eval_env=eval_env)
+            Z, re_info = np.asarray(Zm, float), Zm.design_info
+            re_names = ["Group" if c == "Intercept" else c
+                        for c in re_info.column_names]
+        return y, X, Z, re_info, re_names
+
+    try:
+        y, X, Z, re_info, re_names = build(data, "raise")
+        kept = np.arange(len(data), dtype=np.intp)
+    except PatsyError:
+        if missing != "drop":
+            raise
+        # Find the complete cases with patsy's own NA rules, then rebuild on
+        # exactly those rows so both designs describe the same observations.
+        frames = [dmatrices(formula, data, return_type="dataframe",
+                            NA_action="drop", eval_env=eval_env)[0]]
+        if re_formula is not None and str(re_formula).strip() not in ("1", "~1", ""):
+            frames.append(dmatrix(str(re_formula), data,
+                                  return_type="dataframe", NA_action="drop",
+                                  eval_env=eval_env))
+        idx = frames[0].index
+        for f in frames[1:]:
+            idx = idx.intersection(f.index)
+        kept = np.asarray(idx, dtype=np.intp)
+        y, X, Z, re_info, re_names = build(data.iloc[kept], "raise")
+
+    names = {
+        "endog": str(y.design_info.column_names[0]),
+        "exog": list(X.design_info.column_names),
+        "exog_re": re_names,
+    }
+    return (np.asarray(y, float)[:, 0], np.asarray(X, float), Z,
+            names, kept, X.design_info, re_info)
+
+
+def _group_is_present(groups):
+    """Row mask for group labels that are actually observed.
+
+    A missing group label is not a group. Retaining it silently created an
+    extra level made entirely of rows whose cluster is unknown.
+    """
+    g = np.asarray(groups)
+    if g.dtype.kind in "fc":
+        return np.isfinite(g)
+    return ~pd.isna(g)
 
 
 def _codes_from_groups(groups):
@@ -157,6 +257,17 @@ class MixedLM:
         self.formula = kwargs.pop("formula", None)
         self.re_formula = kwargs.pop("re_formula", None)
         self._exog_re_names = kwargs.pop("exog_re_names", None)
+        self._design_info = kwargs.pop("_design_info", None)
+        self._re_design_info = kwargs.pop("_re_design_info", None)
+        if kwargs:
+            # Silently swallowing an argument is how a caller ends up believing
+            # a model honoured an option it never saw. statsmodels options that
+            # exist but are not implemented here raise NotImplementedError with
+            # a pointer to docs/LIMITATIONS.md; anything unrecognised is a typo
+            # and gets the ordinary TypeError.
+            raise TypeError(
+                "unexpected keyword argument(s) for MixedLM: "
+                + ", ".join(sorted(kwargs)))
 
         endog = np.asarray(endog, float).ravel()
         exog = np.asarray(exog, float)
@@ -170,17 +281,30 @@ class MixedLM:
             exog_re = exog_re[:, None]
 
         groups = np.asarray(groups)
-        if missing == "drop":
-            ok = np.isfinite(endog) & np.all(np.isfinite(exog), 1) \
-                & np.all(np.isfinite(exog_re), 1)
-            endog, exog, exog_re, groups = endog[ok], exog[ok], exog_re[ok], groups[ok]
-        elif not (np.all(np.isfinite(endog)) and np.all(np.isfinite(exog))
-                  and np.all(np.isfinite(exog_re))):
-            raise ValueError("endog/exog contain non-finite values; "
-                             "pass missing='drop' to remove those rows")
-
         if not (len(endog) == exog.shape[0] == exog_re.shape[0] == len(groups)):
-            raise ValueError("endog, exog, exog_re and groups must agree on length")
+            raise ValueError(
+                f"endog ({len(endog)}), exog ({exog.shape[0]}), exog_re "
+                f"({exog_re.shape[0]}) and groups ({len(groups)}) must agree "
+                "on length")
+
+        # Missingness is resolved across *all four* inputs at once. Dropping
+        # them independently -- endog/exog by one rule, exog_re by another,
+        # groups by none at all -- left the arrays misaligned, and a missing
+        # group label survived to become a group of its own.
+        if missing == "drop":
+            ok = (np.isfinite(endog) & np.all(np.isfinite(exog), 1)
+                  & np.all(np.isfinite(exog_re), 1) & _group_is_present(groups))
+            endog, exog, exog_re, groups = endog[ok], exog[ok], exog_re[ok], groups[ok]
+            if len(endog) == 0:
+                raise ValueError("every row was dropped as missing")
+        else:
+            bad = int((~np.isfinite(endog)).sum() + (~np.isfinite(exog)).sum()
+                      + (~np.isfinite(exog_re)).sum()
+                      + (~_group_is_present(groups)).sum())
+            if bad:
+                raise ValueError(
+                    "endog/exog/exog_re/groups contain missing or non-finite "
+                    "values; pass missing='drop' to remove those rows")
 
         self.endog = endog
         self.exog = exog
@@ -188,6 +312,9 @@ class MixedLM:
         self.exog_vc = None
         self.groups = groups
         self.use_sqrt = use_sqrt
+        # The criterion the model was last fitted with; loglike/score/hessian
+        # default to it rather than assuming REML.
+        self.reml = True
 
         self.group_labels, self._codes = _codes_from_groups(groups)
         self.n_groups = len(self.group_labels)
@@ -213,46 +340,53 @@ class MixedLM:
                 "vc_formula (variance components) is not implemented in this "
                 "release; see docs/LIMITATIONS.md."
             )
-        try:
-            from patsy import dmatrices, dmatrix
-        except ImportError as exc:  # pragma: no cover
-            raise ImportError(
-                "the formula interface needs patsy: pip install 'mixedlm-rs[formula]'"
-            ) from exc
+        from patsy import EvalEnvironment
 
         groups = kwargs.pop("groups", None)
         if groups is None:
             raise ValueError("from_formula requires groups=")
+        eval_env = kwargs.pop("eval_env", 0)
+        if isinstance(eval_env, int):
+            # +1 for this frame, so a formula referring to the caller's locals
+            # resolves the way it does in statsmodels.
+            eval_env = EvalEnvironment.capture(eval_env + 1)
+
+        # Alignment is positional throughout. `.loc`-based alignment silently
+        # multiplies rows when the frame has duplicate index labels, and breaks
+        # outright when `groups` is an external Series whose index is the
+        # unsubset one.
+        data = pd.DataFrame(data) if not isinstance(data, pd.DataFrame) else data
         if subset is not None:
-            data = data.loc[subset]
+            sub = np.asarray(subset)
+            mask = sub if sub.dtype == bool else np.isin(np.arange(len(data)), sub)
+            if not isinstance(groups, str) and len(np.asarray(groups)) == len(data):
+                groups = np.asarray(groups)[mask]
+            data = data.iloc[mask]
 
         if isinstance(groups, str):
             groups_arr = np.asarray(data[groups])
         else:
             groups_arr = np.asarray(groups)
+        if len(groups_arr) != len(data):
+            raise ValueError(
+                f"groups has length {len(groups_arr)} but data has "
+                f"{len(data)} rows")
 
-        na_action = "drop" if missing == "drop" else "raise"
-        y, X = dmatrices(formula, data, return_type="dataframe",
-                         NA_action=na_action)
-        if re_formula is None or str(re_formula).strip() in ("1", "~1", ""):
-            Zdf = pd.DataFrame({"Group": np.ones(len(y))}, index=y.index)
-        else:
-            rf = str(re_formula)
-            Zdf = dmatrix(rf, data, return_type="dataframe", NA_action=na_action)
-            Zdf = Zdf.rename(columns={"Intercept": "Group"})
+        # Work on a positional index so patsy's NA handling and the group array
+        # can be re-aligned by position rather than by label.
+        work = data.reset_index(drop=True)
+        y_arr, X_arr, Z, names, kept, fe_design, re_design = _designs(
+            formula, re_formula, work, missing, eval_env)
 
-        Zdf = Zdf.loc[y.index]
-        if len(groups_arr) != len(y):
-            groups_arr = pd.Series(groups_arr, index=data.index).loc[y.index].to_numpy()
-
-        model = cls(y.iloc[:, 0].to_numpy(float), X.to_numpy(float), groups_arr,
-                    exog_re=Zdf.to_numpy(float), missing="none",
-                    endog_name=str(y.columns[0]),
-                    exog_names=list(X.columns),
-                    exog_re_names=list(Zdf.columns),
-                    formula=formula, re_formula=re_formula,
-                    _data_frame=data, **kwargs)
-        return model
+        return cls(y_arr, X_arr, groups_arr[kept],
+                   exog_re=Z, missing=missing,
+                   endog_name=names["endog"],
+                   exog_names=names["exog"],
+                   exog_re_names=names["exog_re"],
+                   formula=formula, re_formula=re_formula,
+                   _design_info=fe_design,
+                   _re_design_info=re_design,
+                   _data_frame=data, **kwargs)
 
     # -- fitting ------------------------------------------------------------
     def fit(self, start_params=None, reml=True, niter_sa=0, do_cg=True,
@@ -271,25 +405,34 @@ class MixedLM:
                           "ignored: this optimiser does not use simulated annealing.",
                           UserWarning, stacklevel=2)
 
-        theta0 = None
-        if start_params is not None:
-            sp = np.asarray(start_params, float)
-            if isinstance(start_params, MixedLMParams):
-                cov = np.asarray(start_params.cov_re, float)
-                theta0 = _vech_col(np.linalg.cholesky(cov))
-            elif sp.size == self.k_re2:
-                theta0 = sp
-            # a full packed vector: take the covariance block
-            elif sp.size >= self.k_fe + self.k_re2:
-                tri = sp[self.k_fe:self.k_fe + self.k_re2]
-                mat = np.zeros((self.k_re, self.k_re))
-                k = 0
-                for r in range(self.k_re):
-                    for c in range(r + 1):
-                        mat[r, c] = tri[k]
-                        k += 1
-                theta0 = _vech_col(mat)
+        theta0 = self._start_theta(start_params, use_sqrt=self.use_sqrt)
 
+        for name in ("do_cg", "full_output"):
+            val = {"do_cg": do_cg, "full_output": full_output}[name]
+            if val != {"do_cg": True, "full_output": False}[name]:
+                warnings.warn(
+                    f"{name}={val!r} is accepted for signature compatibility "
+                    "and has no effect: this optimiser is L-BFGS-B over the "
+                    "profiled criterion, not statsmodels' steepest-descent / "
+                    "conjugate-gradient chain.", UserWarning, stacklevel=2)
+        if method is not None and str(method).lower() not in ("rust", "lbfgs",
+                                                              "l-bfgs-b", "bfgs",
+                                                              "cg", "powell",
+                                                              "nm", "newton"):
+            raise ValueError(
+                f"unknown optimisation method {method!r}. This package accepts "
+                "None (scipy L-BFGS-B over the profiled criterion, the default) "
+                "or 'rust' (the in-crate projected L-BFGS). statsmodels' "
+                "optimiser names are accepted and ignored, because the "
+                "criterion being optimised is not the same one.")
+        if method is not None and str(method).lower() != "rust":
+            warnings.warn(
+                f"method={method!r} is accepted for statsmodels compatibility "
+                "and ignored; the profiled criterion is optimised with "
+                "L-BFGS-B. Pass method='rust' for the in-crate optimiser.",
+                UserWarning, stacklevel=2)
+
+        self.reml = bool(reml)
         n_starts = int(fit_kwargs.pop("n_starts", 3))
         res = fit_core(self.endog, self.exog, self.exog_re, self._codes,
                        self.n_groups, reml=reml, start_params=theta0,
@@ -297,15 +440,89 @@ class MixedLM:
                        maxiter=int(fit_kwargs.pop("maxiter", 500)),
                        gtol=float(fit_kwargs.pop("gtol", 1e-8)),
                        ftol=float(fit_kwargs.pop("ftol", 1e-12)))
+        if fit_kwargs:
+            raise TypeError(
+                "unexpected keyword argument(s) for fit: "
+                + ", ".join(sorted(fit_kwargs)))
         return MixedLMResults(self, res)
 
+    def _start_theta(self, start_params, use_sqrt=True):
+        """Translate a user starting value into the internal `theta`.
+
+        Accepts a :class:`MixedLMParams`, a covariance-only packed vector, or a
+        full packed vector. Returns None to mean "use the default start".
+
+        The isinstance test comes first: converting to an array up front raised
+        TypeError on the documented parameter-container form before the branch
+        that handles it was ever reached.
+        """
+        if start_params is None:
+            return None
+
+        if isinstance(start_params, MixedLMParams):
+            cov = np.asarray(start_params.cov_re, float)
+        else:
+            sp = np.asarray(start_params, float).ravel()
+            full = self.k_fe + self.k_re2 + self.k_vc
+            if sp.size == self.k_re2 + self.k_vc:
+                tri = sp[:self.k_re2]
+            elif sp.size == full:
+                tri = sp[self.k_fe:self.k_fe + self.k_re2]
+            else:
+                raise ValueError(
+                    f"start_params has {sp.size} entries; expected "
+                    f"{self.k_re2 + self.k_vc} (covariance only) or {full} "
+                    "(fixed effects then covariance). A length matching "
+                    "neither used to fall through to the default start, so a "
+                    "mis-sized start was silently ignored.")
+            # statsmodels packs the lower triangle by ROWS; theta is packed by
+            # columns. Below q = 3 the two orders coincide, which is why this
+            # was invisible until a three-term random-effects model was tried.
+            mat = np.zeros((self.k_re, self.k_re))
+            k = 0
+            for r in range(self.k_re):
+                for c in range(r + 1):
+                    mat[r, c] = tri[k]
+                    k += 1
+            if use_sqrt:
+                # The packed triangle is already a Cholesky factor.
+                return _vech_col(mat)
+            cov = mat + mat.T - np.diag(np.diag(mat))
+
+        if cov.shape != (self.k_re, self.k_re):
+            raise ValueError(
+                f"start_params covariance is {cov.shape}, expected "
+                f"({self.k_re}, {self.k_re})")
+        try:
+            fac = np.linalg.cholesky(cov)
+        except np.linalg.LinAlgError:
+            fac = np.diag(np.sqrt(np.maximum(np.diag(cov), 0.0)))
+        return _vech_col(fac)
+
     # -- likelihood surface (for compatibility and testing) -----------------
-    def loglike(self, params, profile_fe=True):
-        """Log-likelihood at a packed parameter vector."""
+    def loglike(self, params, profile_fe=True, reml=None):
+        """Profiled log-likelihood at a packed parameter vector.
+
+        ``params`` may be a :class:`MixedLMParams`, a covariance-only packed
+        vector of length ``k_re2``, or a full packed vector. ``reml`` defaults
+        to the model's own criterion rather than always REML -- evaluating the
+        REML criterion for a model the caller fitted by ML reports a number
+        that does not correspond to any fit.
+
+        ``profile_fe`` is accepted for signature compatibility. This criterion
+        is profiled over the fixed effects by construction, so ``False`` is not
+        available; it raises rather than silently returning the profiled value.
+        """
+        if not profile_fe:
+            raise NotImplementedError(
+                "profile_fe=False is not available: the criterion implemented "
+                "here eliminates the fixed effects analytically, so there is "
+                "no un-profiled surface to evaluate. See docs/DESIGN.md.")
         theta = self._theta_from_packed(params)
-        core = self._core()
-        dev = core.deviance(list(theta), True)
-        return -0.5 * dev
+        return -0.5 * self._core().deviance(list(theta), self._reml_flag(reml))
+
+    def _reml_flag(self, reml):
+        return bool(self.reml if reml is None else reml)
 
     def _core(self):
         from ._mixedlm_rs import LmmCore
@@ -319,22 +536,46 @@ class MixedLM:
         return self._core_cache
 
     def _theta_from_packed(self, params):
-        sp = np.asarray(params, float)
-        tri = sp[self.k_fe:self.k_fe + self.k_re2]
-        mat = np.zeros((self.k_re, self.k_re))
-        k = 0
-        for r in range(self.k_re):
-            for c in range(r + 1):
-                mat[r, c] = tri[k]
-                k += 1
-        return _vech_col(mat)
+        """Packed vector (any accepted form) -> internal `theta`.
 
-    def predict(self, params, exog=None):
+        A covariance-only vector of length ``k_re2`` is accepted, which is what
+        the optimiser actually passes around; requiring a fixed-effect prefix
+        made ``loglike`` raise IndexError on the reference's own convention.
+        """
+        theta = self._start_theta(params, use_sqrt=self.use_sqrt)
+        if theta is None:
+            raise ValueError("params must not be None")
+        return theta
+
+    def predict(self, params, exog=None, transform=True):
+        """Marginal prediction ``X beta``, matching the reference.
+
+        With a formula-fitted model and ``transform=True``, ``exog`` may be a
+        DataFrame of new data: the stored patsy design is applied to it, so
+        transformations, categorical codings and the intercept are rebuilt the
+        same way they were at fit time. Passing raw new data used to be a shape
+        error, because only the numeric design was retained.
+        """
         if exog is None:
-            exog = self.exog
-        exog = np.asarray(exog, float)
-        fe = np.asarray(params, float)[:self.k_fe]
-        return exog @ fe
+            X = self.exog
+        elif transform and self._design_info is not None and                 isinstance(exog, (pd.DataFrame, dict)):
+            from patsy import dmatrix
+            X = np.asarray(dmatrix(self._design_info, exog,
+                                   return_type="matrix"), dtype=float)
+        else:
+            X = np.asarray(exog, float)
+            if X.ndim == 1:
+                X = X[:, None]
+        if X.shape[1] != self.k_fe:
+            raise ValueError(
+                f"exog has {X.shape[1]} columns, expected {self.k_fe}. For a "
+                "formula-fitted model pass a DataFrame of new data and leave "
+                "transform=True so the design is rebuilt.")
+        if isinstance(params, MixedLMParams):
+            fe = np.asarray(params.fe_params, float)
+        else:
+            fe = np.asarray(params, float).ravel()[:self.k_fe]
+        return X @ fe
 
     @property
     def endog_names(self):
@@ -343,18 +584,69 @@ class MixedLM:
     def initialize(self):
         return None
 
-    def score(self, params, profile_fe=True):
+    def score(self, params, profile_fe=True, reml=None):
+        """Gradient of :meth:`loglike`, in the internal ``theta`` coordinates.
+
+        These are the entries of the relative covariance factor, not
+        statsmodels' packed covariance parameters, so the two are not
+        numerically comparable term by term. docs/LIMITATIONS.md says so
+        explicitly; the coordinates are documented rather than translated
+        because the chain rule through a Cholesky factor is not invertible at
+        the boundary, which is exactly where these are most often inspected.
+        """
+        if not profile_fe:
+            raise NotImplementedError(
+                "profile_fe=False is not available; see loglike().")
         theta = self._theta_from_packed(params)
-        _, g = self._core().deviance_grad(list(theta), True)
+        _, g = self._core().deviance_grad(list(theta), self._reml_flag(reml))
         return -0.5 * np.asarray(g, float)
 
-    def hessian(self, params):
+    def hessian(self, params, reml=None):
+        """Hessian of :meth:`loglike` in the internal ``theta`` coordinates.
+
+        Shape is ``(k_re2, k_re2)`` -- the profiled criterion has no fixed-effect
+        or scale coordinates, so this is not the reference's full
+        ``(k_fe + k_re2 + 1)`` square. Use ``MixedLMResults.cov_params()`` for
+        fixed-effect inference.
+        """
         from ._fit import _profiled_hessian
         theta = self._theta_from_packed(params)
-        return -0.5 * _profiled_hessian(self._core(), theta, True)
+        return -0.5 * _profiled_hessian(self._core(), theta,
+                                        self._reml_flag(reml))
 
-    def information(self, params):
-        return -self.hessian(params)
+    def information(self, params, reml=None):
+        return -self.hessian(params, reml=reml)
+
+    # -- persistence --------------------------------------------------------
+    def __getstate__(self):
+        """Drop what cannot be pickled: the compiled core and patsy's DesignInfo.
+
+        patsy declines to pickle a ``DesignInfo`` (pydata/patsy#26), so a
+        formula-fitted model loses the ability to rebuild a design for
+        ``predict`` on new *raw* data across a pickle boundary. Everything
+        else -- the fitted numbers, the numeric designs, ``predict`` on an
+        already-built design matrix -- survives. Documented in
+        docs/LIMITATIONS.md.
+        """
+        state = self.__dict__.copy()
+        state["_core_cache"] = None
+        state["_design_info"] = None
+        state["_re_design_info"] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+
+    def fit_regularized(self, *args, **kwargs):
+        raise NotImplementedError(
+            "fit_regularized (L1-penalised fixed effects) is not implemented "
+            "in this release; see docs/LIMITATIONS.md. Refusing rather than "
+            "silently fitting the unpenalised model.")
+
+    def get_distribution(self, *args, **kwargs):
+        raise NotImplementedError(
+            "get_distribution is not implemented in this release; see "
+            "docs/LIMITATIONS.md.")
 
     def get_scale(self, fe_params=None, cov_re=None, vcomp=None):
         raise NotImplementedError(
@@ -362,9 +654,23 @@ class MixedLM:
             "parameterisation; use MixedLMResults.scale instead."
         )
 
+    def group_list(self, array):
+        """Split ``array`` by group, as the reference does.
+
+        This was a list-valued property returning the labels, which is a
+        different thing under the same name: code calling
+        ``model.group_list(resid)`` got a TypeError.
+        """
+        arr = np.asarray(array)
+        return [arr[self._codes == i] for i in range(self.n_groups)]
+
     @property
-    def group_list(self):
-        return list(self.group_labels)
+    def df_resid(self):
+        return self.nobs - self.k_fe
+
+    @property
+    def df_modelwc(self):
+        return self.k_fe + self.k_re2 + self.k_vc
 
 
 def _vech_col(mat):
@@ -386,6 +692,7 @@ class MixedLMResults:
         self.scale = res["scale"]
         self.vcomp = np.zeros(0)
         self.converged = res["converged"]
+        self.singular = res["singular"]
         self.reml = res["reml"]
         self.nobs = res["n"]
         self.k_fe = res["p"]
@@ -401,6 +708,41 @@ class MixedLMResults:
         self._bse_re_unscaled = res["bse_re_unscaled"]
         self._compute_bse_re = res.get("compute_bse_re")
 
+    # -- persistence --------------------------------------------------------
+    #
+    # The fit result carries the compiled core and a closure over it for the
+    # lazy standard errors; neither can be pickled, which made a fitted model
+    # unusable with multiprocessing, joblib caching or a saved analysis.
+    # Forcing the standard errors and dropping the core leaves a fully
+    # self-contained result -- everything MixedLMResults exposes is already
+    # materialised by then.
+    def __getstate__(self):
+        _ = self._bse_re_packed          # realise before discarding the core
+        state = self.__dict__.copy()
+        state["_compute_bse_re"] = None
+        res = dict(state["_res"])
+        res.pop("core", None)
+        res.pop("compute_bse_re", None)
+        res["bse_re_unscaled"] = self._bse_re_unscaled
+        state["_res"] = res
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+
+    def save(self, path):
+        """Pickle this result to ``path``."""
+        import pickle
+        with open(path, "wb") as fh:
+            pickle.dump(self, fh)
+
+    @classmethod
+    def load(cls, path):
+        """Load a result written by :meth:`save`."""
+        import pickle
+        with open(path, "rb") as fh:
+            return pickle.load(fh)
+
     # -- parameter vector, statsmodels packing ------------------------------
     @property
     def params(self):
@@ -412,12 +754,13 @@ class MixedLMResults:
         return np.sqrt(np.diag(self._cov_beta))
 
     @property
-    def bse_re(self):
-        """Standard errors of the variance components.
+    def _bse_re_packed(self):
+        """Standard errors of the *unscaled* covariance parameters.
 
-        Computed on first access, not during the fit: the profiled Hessian costs
-        2 * n_theta extra gradient evaluations, and most callers only look at the
-        fixed effects.
+        This is what goes in the tail of ``params`` and ``bse``, matching the
+        reference's packing. Computed on first access, not during the fit: the
+        profiled Hessian costs 2 * n_theta extra gradient evaluations, and most
+        callers only look at the fixed effects.
         """
         if self._bse_re_unscaled is None and self._compute_bse_re is not None:
             self._bse_re_unscaled = self._compute_bse_re()
@@ -428,8 +771,46 @@ class MixedLMResults:
         return _vech_row(m)
 
     @property
+    def bse_re(self):
+        """Standard errors of the variance parameters, as the reference defines them.
+
+        statsmodels computes ``sqrt(scale * diag(cov_params())[k_fe:])``, i.e.
+        ``sqrt(scale)`` times the standard errors of the *unscaled* covariance
+        parameters that ``bse`` reports. That is a different quantity from
+        ``bse[k_fe:]``, and this property used to return the latter -- so a
+        caller reading ``bse_re`` got numbers a factor of ``sqrt(scale)`` out.
+
+        Note the reference's own inconsistency, preserved here for
+        compatibility: the value displayed alongside these errors in
+        ``summary()`` is ``cov_re``, which is ``scale`` times the unscaled
+        parameter, so the tabulated estimate and its standard error differ by a
+        further factor of ``sqrt(scale)``. Use :attr:`bse_cov_re` for standard
+        errors on the same scale as :attr:`cov_re`.
+
+        The sampling distribution of a variance parameter is strongly skewed
+        unless the sample size is large, and degenerate at the boundary; see
+        :attr:`singular`.
+        """
+        return np.sqrt(self.scale) * self._bse_re_packed
+
+    @property
+    def bse_cov_re(self):
+        """Standard errors on the same scale as :attr:`cov_re`.
+
+        Not a statsmodels attribute. ``cov_re = scale * cov_re_unscaled``, so
+        these are ``scale`` times the unscaled standard errors -- the internally
+        consistent pairing that :attr:`bse_re` does not provide.
+        """
+        return self.scale * self._bse_re_packed
+
+    @property
     def bse(self):
-        return np.concatenate([self.bse_fe, self.bse_re])
+        """Standard errors of the packed parameter vector.
+
+        The tail is on the unscaled covariance parameterisation, matching
+        :attr:`params` and the reference's ``bse``.
+        """
+        return np.concatenate([self.bse_fe, self._bse_re_packed])
 
     @property
     def tvalues(self):
@@ -490,10 +871,50 @@ class MixedLMResults:
 
     @property
     def random_effects_cov(self):
-        cov = self.cov_re
-        names = self.model._exog_re_names
-        frame = pd.DataFrame(cov, index=names, columns=names)
-        return {lab: frame for lab in self.model.group_labels}
+        """Conditional covariance of each group's random effects, given the data.
+
+        This is *not* the population covariance ``cov_re``: it is
+        ``Var(b_i | y_i)``, which shrinks as a group accumulates observations.
+        Returning ``cov_re`` for every group -- as this once did -- reported the
+        prior where the posterior was asked for, and for a random intercept the
+        two differ by the whole factor ``1 / (1 + n_i * tau^2 / sigma^2)``.
+
+        With ``G = cov_re`` and ``s = scale``,
+
+            Var(b_i | y_i) = G - G Z_i' (Z_i G Z_i' + s I)^-1 Z_i G
+                           = G - G (s I + Z_i'Z_i G)^-1 Z_i'Z_i G,
+
+        the second form needing only ``q x q`` work per group. It is used
+        because it stays valid when ``G`` is singular, which is exactly the
+        boundary case a mixed model most often lands on.
+        """
+        G = np.asarray(self.cov_re, float)
+        q = G.shape[0]
+        names = list(self.model._exog_re_names)
+        m = self.model.n_groups
+        codes = self.model._codes
+        Z = self.model.exog_re
+
+        # Z_i'Z_i for every group at once: q^2 weighted bincounts rather than a
+        # Python loop over groups.
+        ztz = np.empty((m, q, q))
+        for a in range(q):
+            for b in range(a + 1):
+                v = np.bincount(codes, weights=Z[:, a] * Z[:, b], minlength=m)
+                ztz[:, a, b] = v
+                ztz[:, b, a] = v
+
+        gz = ztz @ G                                  # (m, q, q)
+        lhs = self.scale * np.eye(q) + gz
+        try:
+            covs = G - G @ np.linalg.solve(lhs, gz)
+        except np.linalg.LinAlgError:                 # pragma: no cover
+            covs = np.stack([G - G @ np.linalg.pinv(lhs[i]) @ gz[i]
+                             for i in range(m)])
+        # A fresh frame per group: these used to be the same mutable object,
+        # so editing one group's table edited every group's.
+        return {lab: pd.DataFrame(covs[i], index=names, columns=names)
+                for i, lab in enumerate(self.model.group_labels)}
 
     def conf_int(self, alpha=0.05, cols=None):
         from scipy import stats
@@ -503,25 +924,137 @@ class MixedLMResults:
         out = np.column_stack([lo, hi])
         return out if cols is None else out[cols]
 
-    def cov_params(self):
-        """Covariance of the fixed effects.
+    def cov_params(self, r_matrix=None, column=None, scale=None, cov_p=None):
+        """Covariance of the packed parameter vector.
 
-        statsmodels returns the covariance of the whole packed vector; here only
-        the fixed-effect block is exact, so the variance-component rows are
-        filled with the delta-method variances on the diagonal and NaN
-        off-diagonal. Documented in docs/CORRECTNESS.md.
+        The fixed-effect block is the GLS covariance
+        ``sigma^2 (X' V(theta_hat)^-1 X)^-1``, evaluated at the fitted variance
+        parameters. That is the standard mixed-model fixed-effect covariance and
+        what both lme4 and statsmodels report, but it is *conditional on*
+        ``theta_hat``: it does not propagate uncertainty in the variance
+        parameters, so it is not in general the fixed-effect block of the
+        inverse full observed information, and it is mildly anti-conservative in
+        small samples. Kenward-Roger and Satterthwaite corrections exist for
+        exactly this reason and are not implemented here; see
+        docs/LIMITATIONS.md.
+
+        The variance-component rows carry the delta-method variances on the
+        diagonal and NaN off-diagonal, rather than a fabricated full covariance.
+
+        ``r_matrix``, ``column``, ``scale`` and ``cov_p`` follow the reference.
         """
         k = self.params.size
         out = np.full((k, k), np.nan)
         p = self.k_fe
-        out[:p, :p] = self._cov_beta
-        bre = self.bse_re
+        out[:p, :p] = self._cov_beta if cov_p is None else np.asarray(cov_p)[:p, :p]
+        bre = self._bse_re_packed
         for i in range(len(bre)):
             out[p + i, p + i] = bre[i] ** 2
+        if scale is not None:
+            out = out * scale
+        if r_matrix is not None:
+            R = np.atleast_2d(np.asarray(r_matrix, float))
+            if R.shape[1] == k and not np.any(R[:, p:]):
+                # The variance-component block is structurally NaN off the
+                # diagonal, and 0 * NaN is NaN, so a contrast that touches only
+                # the fixed effects would otherwise come back all-NaN.
+                R = R[:, :p]
+            if R.shape[1] == p:
+                return R @ out[:p, :p] @ R.T
+            return R @ out @ R.T
+        if column is not None:
+            col = np.atleast_1d(column)
+            return out[np.ix_(col, col)] if col.size > 1 else out[col[0], col[0]]
         return out
 
-    def predict(self, exog=None):
-        return self.model.predict(self.params, exog=exog)
+    # -- hypothesis tests ---------------------------------------------------
+    #
+    # Restricted to the fixed effects, as in the reference: the variance
+    # parameters sit on a bounded space and their Wald statistics are not
+    # chi-square distributed near the boundary.
+    def _fe_contrast(self, r_matrix):
+        if isinstance(r_matrix, str):
+            R = _parse_constraints(r_matrix, list(self.model.exog_names))
+        else:
+            R = np.atleast_2d(np.asarray(r_matrix, float))
+        if R.shape[1] == self.k_fe + 1:
+            R, qv = R[:, :-1], R[:, -1]
+        else:
+            qv = np.zeros(R.shape[0])
+        if R.shape[1] != self.k_fe:
+            raise ValueError(
+                f"constraint matrix has {R.shape[1]} columns, expected "
+                f"{self.k_fe} (one per fixed effect), optionally plus a "
+                "right-hand-side column")
+        return R, qv
+
+    def t_test(self, r_matrix, use_t=None):
+        """Wald test of ``R beta = q`` on the fixed effects, term by term."""
+        from scipy import stats
+        R, qv = self._fe_contrast(r_matrix)
+        eff = R @ self.fe_params - qv
+        se = np.sqrt(np.diag(R @ self._cov_beta @ R.T))
+        with np.errstate(invalid="ignore", divide="ignore"):
+            stat = eff / se
+        use_t = self.use_t if use_t is None else bool(use_t)
+        if use_t:
+            pv = 2 * stats.t.sf(np.abs(stat), self.df_resid)
+        else:
+            pv = 2 * stats.norm.sf(np.abs(stat))
+        return _ContrastResults(eff, se, stat, pv, use_t, self.df_resid)
+
+    def wald_test(self, r_matrix, use_f=False, scalar=True):
+        """Joint Wald test of ``R beta = q`` on the fixed effects."""
+        from scipy import stats
+        R, qv = self._fe_contrast(r_matrix)
+        eff = R @ self.fe_params - qv
+        V = R @ self._cov_beta @ R.T
+        stat = float(eff @ np.linalg.solve(V, eff))
+        df = R.shape[0]
+        if use_f:
+            fval = stat / df
+            return _ContrastResults(eff, None, fval,
+                                    float(stats.f.sf(fval, df, self.df_resid)),
+                                    True, self.df_resid, df_num=df)
+        return _ContrastResults(eff, None, stat,
+                                float(stats.chi2.sf(stat, df)),
+                                False, self.df_resid, df_num=df)
+
+    def f_test(self, r_matrix):
+        """Joint F test of ``R beta = q`` on the fixed effects."""
+        return self.wald_test(r_matrix, use_f=True)
+
+    # -- labelled views -----------------------------------------------------
+    @property
+    def param_names(self):
+        """Names for every entry of :attr:`params`."""
+        return (list(self.model.exog_names)
+                + _re_param_names(list(self.model._exog_re_names)))
+
+    @property
+    def fe_params_labelled(self):
+        """:attr:`fe_params` as a named Series, for name-based access."""
+        return pd.Series(self.fe_params, index=list(self.model.exog_names))
+
+    @property
+    def params_labelled(self):
+        """:attr:`params` as a named Series."""
+        return pd.Series(self.params, index=self.param_names)
+
+    @property
+    def params_object(self):
+        """The fit as a :class:`MixedLMParams`, as the reference exposes it."""
+        return MixedLMParams.from_components(
+            fe_params=np.asarray(self.fe_params, float),
+            cov_re=np.asarray(self.cov_re_unscaled, float),
+            vcomp=np.asarray(self.vcomp, float))
+
+    @property
+    def df_resid(self):
+        return self.nobs - self.k_fe
+
+    def predict(self, exog=None, transform=True):
+        return self.model.predict(self.params, exog=exog, transform=transform)
 
     # -- reporting ----------------------------------------------------------
     def summary(self, yname=None, xname_fe=None, xname_re=None, title=None,
@@ -549,7 +1082,7 @@ class MixedLMResults:
             ("Scale:", f"{self.scale:.4f}"),
             ("Log-Likelihood:", f"{self.llf:.4f}"),
             ("Converged:", "Yes" if self.converged else "No"),
-            ("", ""),
+            ("Singular fit:", "Yes" if self.singular else "No"),
         ]
         for (la, lv), (ra, rv) in zip(left, right):
             lines.append(f"{la:<22s}{lv:<18s}{ra:<22s}{rv:>16s}")
@@ -567,9 +1100,13 @@ class MixedLMResults:
             lines.append(f"{nm[:20]:<20s}{c:10.3f}{se:10.3f}{zv:9.3f}{pv:9.3f}"
                          f"{c - z * se:10.3f}{c + z * se:10.3f}")
 
-        # Variance components, on the unscaled (statsmodels) scale.
+        # Variance components. The displayed value is `cov_re` -- the actual
+        # estimated covariance -- exactly as the reference displays it. This
+        # once printed `cov_re_unscaled`, the ratio to the residual variance,
+        # under the label "Group Var": on sleepstudy that showed 0.935 where
+        # both lme4 and statsmodels report 612.1.
         vn = _re_param_names(re_names)
-        vals = _vech_row(self.cov_re_unscaled)
+        vals = _vech_row(self.cov_re)
         ses = self.bse_re
         for i, nm in enumerate(vn):
             se = ses[i] if i < len(ses) else np.nan
@@ -577,6 +1114,15 @@ class MixedLMResults:
             lines.append(f"{nm[:20]:<20s}{vals[i]:10.3f}{se_s}"
                          f"{'':>9s}{'':>9s}{'':>10s}{'':>10s}")
         lines.append("=" * 78)
+        if self.singular:
+            lines.append(
+                "Singular fit: a variance component is estimated at the "
+                "boundary (zero). The estimate is legitimate, but Wald")
+            lines.append(
+                "standard errors and p-values for the variance parameters "
+                "do not apply there --")
+            lines.append(
+                "this is a boundary optimum, not a convergence failure.")
         return _SummaryText("\n".join(lines))
 
     def __str__(self):
@@ -610,6 +1156,63 @@ def _re_param_names(re_names):
             else:
                 out.append(f"{re_names[c]} x {re_names[r]} Cov")
     return out
+
+
+def _parse_constraints(spec, names):
+    """Turn "x1 = 0, x2 - x3 = 0" into a contrast matrix over `names`."""
+    rows = []
+    for clause in spec.split(","):
+        clause = clause.strip()
+        if not clause:
+            continue
+        lhs, _, rhs = clause.partition("=")
+        row = np.zeros(len(names) + 1)
+        row[-1] = float(rhs) if rhs.strip() else 0.0
+        for piece in lhs.replace("-", "+-").split("+"):
+            piece = piece.strip()
+            if not piece:
+                continue
+            sign = -1.0 if piece.startswith("-") else 1.0
+            piece = piece.lstrip("-").strip()
+            coef, _, nm = piece.rpartition("*")
+            nm = nm.strip()
+            if nm not in names:
+                raise ValueError(f"unknown term {nm!r} in constraint {spec!r}")
+            row[names.index(nm)] += sign * (float(coef) if coef.strip() else 1.0)
+        rows.append(row)
+    if not rows:
+        raise ValueError(f"no constraints parsed from {spec!r}")
+    return np.array(rows)
+
+
+class _ContrastResults:
+    """Minimal stand-in for statsmodels' ContrastResults."""
+
+    def __init__(self, effect, sd, statistic, pvalue, use_t, df_denom,
+                 df_num=None):
+        self.effect = np.atleast_1d(effect)
+        self.sd = sd
+        self.statistic = statistic
+        self.pvalue = pvalue
+        self.use_t = use_t
+        self.df_denom = df_denom
+        self.df_num = df_num
+        self.tvalue = statistic
+        self.fvalue = statistic if (use_t and df_num is not None) else None
+
+    def summary(self):
+        return str(self)
+
+    def __str__(self):
+        if self.df_num is not None:
+            kind = "F" if self.use_t else "chi2"
+        else:
+            kind = "t" if self.use_t else "z"
+        tail = f", df_num={self.df_num}" if self.df_num is not None else ""
+        return (f"<{kind}={np.round(self.statistic, 4)}, "
+                f"p={np.round(self.pvalue, 4)}, df_denom={self.df_denom}{tail}>")
+
+    __repr__ = __str__
 
 
 class _SummaryText:

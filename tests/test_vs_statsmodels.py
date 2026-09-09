@@ -102,14 +102,26 @@ def test_standard_errors_agree(ngroups, nper, seed, re_formula, unbal):
     # Fixed-effect SEs are exact on both sides.
     assert np.allclose(ours.bse_fe, np.asarray(theirs.bse)[:ours.k_fe],
                        rtol=2e-3), f"{ours.bse_fe} vs {np.asarray(theirs.bse)[:ours.k_fe]}"
-    # Variance-component SEs come from different parameterisations; require
-    # agreement to a few percent rather than to machine precision.
-    ours_re = ours.bse_re
-    theirs_re = np.asarray(theirs.bse)[ours.k_fe:ours.k_fe + len(ours_re)]
+    # Compare like with like. `bse` carries the *unscaled* covariance
+    # parameters on both sides, while `bse_re` is sqrt(scale) times that -- a
+    # different quantity under a similar name. This test used to compare our
+    # `bse_re` against the reference's `bse` tail, so it passed for years while
+    # `bse_re` itself was a factor of sqrt(scale) out.
+    k, n_re = ours.k_fe, ours.k_re2
+
+    ours_packed = np.asarray(ours.bse)[k:k + n_re]
+    theirs_packed = np.asarray(theirs.bse)[k:k + n_re]
+    good = np.isfinite(ours_packed) & np.isfinite(theirs_packed)
+    assert good.any(), "no finite packed variance-component SEs to compare"
+    assert np.allclose(ours_packed[good], theirs_packed[good], rtol=0.05), \
+        f"packed: {ours_packed} vs {theirs_packed}"
+
+    ours_re = np.asarray(ours.bse_re)[:n_re]
+    theirs_re = np.asarray(theirs.bse_re)[:n_re]
     good = np.isfinite(ours_re) & np.isfinite(theirs_re)
-    if good.any():
-        assert np.allclose(ours_re[good], theirs_re[good], rtol=0.05), \
-            f"{ours_re} vs {theirs_re}"
+    assert good.any(), "no finite bse_re entries to compare"
+    assert np.allclose(ours_re[good], theirs_re[good], rtol=0.05), \
+        f"bse_re: {ours_re} vs {theirs_re}"
 
 
 @pytest.mark.parametrize("ngroups,nper,seed,re_formula,unbal", CASES[:4])

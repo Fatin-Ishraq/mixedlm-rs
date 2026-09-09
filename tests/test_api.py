@@ -100,7 +100,7 @@ def test_variance_components_are_refused_not_ignored():
     df = toy()
     with pytest.raises(NotImplementedError, match="variance components"):
         MixedLM(df["y"], np.ones((len(df), 1)), df["g"],
-                exog_vc=VCSpec(["a"], [np.ones((len(df), 1))]))
+                exog_vc=VCSpec(["a"], [["a0"]], [np.ones((len(df), 1))]))
     with pytest.raises(NotImplementedError, match="vc_formula"):
         MixedLM.from_formula("y ~ x1", df, groups=df["g"], vc_formula={"a": "0 + C(g)"})
 
@@ -123,7 +123,7 @@ def test_unimplemented_results_methods_raise(meth):
 
 def test_vcspec_can_be_constructed():
     """The name must import and construct so dependent code keeps working."""
-    v = VCSpec(["a"], [np.ones((3, 1))])
+    v = VCSpec(["a"], [["a0"]], [np.ones((3, 1))])
     assert v.names == ["a"]
 
 

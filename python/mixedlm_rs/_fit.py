@@ -101,6 +101,65 @@ def _cov_re_jacobian(theta, q):
     return J, vech
 
 
+def _condition_design(y, X):
+    """Put the fixed-effect system on a well-conditioned, well-centred footing.
+
+    Two exact reparameterisations, applied before any cross-product is formed:
+
+    **Column scaling.** `X -> X D^-1`, `beta -> D beta`. The criterion surface is
+    identical; only the coordinates move.
+
+    **Response offset.** The profiled criterion depends on `y` only through
+
+        pwrss = min over beta, u of ||y - X beta - Z Lambda u||^2 + ||u||^2,
+
+    and replacing `y` by `y - X c` merely shifts the minimising `beta` by `-c`.
+    The minimum itself -- and therefore the deviance, `sigma^2`, `theta` and the
+    random effects -- is unchanged for *any* `c`. Choosing `c` to be the OLS
+    coefficients makes the working response the OLS residual, which matters
+    because the core evaluates
+
+        pwrss = y'y - beta'X'y - u'Lambda'Z'y,
+
+    a difference of large nearly-equal quantities. On raw `y` that cancellation
+    is catastrophic: with a response around 1e8 -- prices in minor units, epoch
+    timestamps, populations -- `y'y` is around 1e18, a double resolves it to
+    about 256, and a residual sum of squares of order 1 is entirely noise. The
+    fit then returns a confidently converged wrong answer.
+
+    After the offset, `X'y` is zero to rounding and `y'y` is the OLS residual
+    sum of squares, which is the same order as `pwrss` itself. What remains is
+    the precision the data actually carries: a response stored as `1e8 + O(1)`
+    only determines its own residuals to about 2e-8 absolute, and no
+    rearrangement of the arithmetic can recover digits that are not in the
+    input. `lme4` sits at the same limit for the same reason.
+
+    Returns `(y_work, X_work, beta_offset, xscale)` with
+
+        beta_original = (beta_offset + beta_fitted) / xscale.
+    """
+    X = np.ascontiguousarray(X, dtype=np.float64)
+    y = np.ascontiguousarray(y, dtype=np.float64)
+
+    xscale = np.sqrt(np.mean(np.square(X), axis=0))
+    xscale[~np.isfinite(xscale) | (xscale <= 0)] = 1.0
+    Xs = X if np.all(xscale == 1.0) else np.ascontiguousarray(X / xscale)
+
+    # lstsq is rank-revealing, so the rank check below is free.
+    beta0, _, rank, _ = np.linalg.lstsq(Xs, y, rcond=None)
+    if rank < Xs.shape[1]:
+        raise ValueError(
+            f"the fixed-effects design matrix is rank deficient: rank {rank} "
+            f"of {Xs.shape[1]} columns. Some predictor is an exact linear "
+            "combination of the others -- a duplicated column, a redundant "
+            "categorical coding, or a constant term alongside the intercept. "
+            "Drop the redundant column; the model as written does not "
+            "identify its own fixed effects.")
+
+    y_work = y - Xs @ beta0
+    return np.ascontiguousarray(y_work), Xs, beta0, xscale
+
+
 def _column_scales(Z):
     """Root-mean-square norm of each random-effects column, for conditioning.
 
@@ -164,36 +223,48 @@ def fit_core(y, X, Z, codes, n_groups, reml=True, start_params=None,
     else:
         Zs = np.ascontiguousarray(Z / dscale)
 
-    core = LmmCore(np.ascontiguousarray(y, dtype=np.float64),
-                   np.ascontiguousarray(X, dtype=np.float64),
-                   Zs,
+    y_work, Xs, beta_offset, xscale = _condition_design(y, X)
+
+    core = LmmCore(y_work, Xs, Zs,
                    np.ascontiguousarray(codes, dtype=np.int64),
                    int(n_groups))
 
     q = core.q
     use_rust = str(method).lower() == "rust"
 
-    if use_rust:
-        flat = np.concatenate(_starts(core, start_params, n_starts))
-        sol = core.fit(list(flat), reml, maxiter, gtol, ftol)
-        theta = np.asarray(sol["theta"], float)
-        converged = bool(sol["converged"])
-        message = str(sol["message"])
-        nfev = int(sol["fev"])
-        nit = int(sol["iterations"])
-    else:
-        lower = np.asarray(core.lower_bounds(), float)
-        bounds = [(0.0, None) if np.isfinite(v) else (None, None) for v in lower]
-        tix = _theta_index(q)
-        diag_k = [k for k, (r, c) in enumerate(tix) if r == c]
+    lower = np.asarray(core.lower_bounds(), float)
+    bounds = [(0.0, None) if np.isfinite(v) else (None, None) for v in lower]
+    tix = _theta_index(q)
+    diag_k = [k for k, (r, c) in enumerate(tix) if r == c]
+    state = {"nfev": 0, "nit": 0}
 
+    class _Res:
+        """The bit of a scipy OptimizeResult the driver below actually uses."""
+
+        __slots__ = ("x", "fun", "success", "message", "nit")
+
+        def __init__(self, x, fun, success, message, nit):
+            self.x, self.fun = np.asarray(x, float), float(fun)
+            self.success, self.message, self.nit = bool(success), str(message), int(nit)
+
+    if use_rust:
+        def run(th0):
+            sol = core.fit(list(np.asarray(th0, float)), reml, maxiter, gtol, ftol)
+            state["nfev"] += int(sol["fev"])
+            state["nit"] += int(sol["iterations"])
+            return _Res(np.asarray(sol["theta"], float), float(sol["deviance"]),
+                        bool(sol["converged"]), str(sol["message"]),
+                        int(sol["iterations"]))
+    else:
         def obj(t):
             f, g = core.deviance_grad(list(t), reml)
             if not np.isfinite(f):
-                return 1e300, np.zeros(len(t))
+                # A huge finite value with a zero gradient looks stationary to
+                # the optimiser, which is how an infeasible start used to be
+                # reported as a successful fit. Point the gradient back towards
+                # the feasible region instead, and never call this a success.
+                return 1e300, -np.asarray(t, float)
             return f, np.asarray(g, float)
-
-        state = {"nfev": 0}
 
         def run(th0):
             res = minimize(obj, np.asarray(th0, float), jac=True,
@@ -201,97 +272,158 @@ def fit_core(y, X, Z, codes, n_groups, reml=True, start_params=None,
                            options={"ftol": ftol, "gtol": gtol,
                                     "maxiter": maxiter})
             state["nfev"] += int(res.nfev)
-            return res
+            state["nit"] += int(res.nit)
+            return _Res(res.x, res.fun, res.success, res.message, res.nit)
 
-        # ---- Optimise from the primary start.
-        #
-        # Extra starts are tried only if the first one fails to converge. An
-        # unconditional multi-start was measured to be pure overhead: across the
-        # 120 randomised fuzz fixtures, n_starts=1 and n_starts=3 produce
-        # *identical* outcomes (0 worse, 19 better, 26 where the reference does
-        # not converge) while n_starts=3 costs 68.4 mean objective evaluations
-        # against 47.5. The robustness comes from the boundary escape below, not
-        # from the extra starts.
-        all_starts = _starts(core, start_params, max(1, n_starts))
-        best = run(all_starts[0])
-        if not best.success:
-            for th0 in all_starts[1:]:
-                res = run(th0)
-                if res.fun < best.fun:
+    # ---- Optimise from every start and keep the best.
+    #
+    # This is a heuristic search, not a certificate: nothing here proves the
+    # result is the global optimum of a criterion that genuinely can be
+    # multimodal. What it does is make the common failure modes unlikely, and
+    # the stationarity check below then verifies that wherever we stopped is at
+    # least a stationary point. LIMITATIONS.md states the distinction.
+    if start_params is not None:
+        # A caller's theta describes Lambda in the *data* coordinates. The core
+        # sees Z D^-1, where the matching factor is D Lambda, so scale the rows
+        # of the packed lower triangle by D before handing it over. Without
+        # this a supplied start silently meant a different covariance than the
+        # one the caller wrote.
+        lam0 = theta_to_lambda(np.asarray(start_params, float), q) * dscale[:, None]
+        start_params = np.array([lam0[r, c] for c in range(q) for r in range(c, q)])
+
+    all_starts = _starts(core, start_params, max(1, n_starts))
+    best = run(all_starts[0])
+    # Every additional start is *compared*, not used only as a fallback.
+    # Trying extra starts only after a reported failure meant that a
+    # successful stop at a worse interior optimum was never challenged --
+    # the one case where a second start would have helped most.
+    for th0 in all_starts[1:]:
+        res = run(th0)
+        if res.fun < best.fun - 1e-10:
+            best = res
+
+    # ---- Boundary escape.
+    #
+    # At Lambda = 0 every term of the gradient vanishes identically: M = 0,
+    # so d(ldL2) = 0; u = 0, so d(pwrss) = 0; B = 0, so d(ldRX2) = 0. theta = 0
+    # is therefore a *stationary point of the profiled criterion whatever the
+    # data*, and a gradient-based optimiser that reaches it stops there and
+    # reports a zero projected gradient -- even when the true optimum has a
+    # perfectly ordinary non-zero variance.
+    #
+    # Singular fits are real and must be reportable (Dyestuff2 genuinely has
+    # a between-batch variance of zero), so we cannot just forbid the bound.
+    # Instead, whenever a diagonal entry lands on it, probe a few positive
+    # values along that coordinate and re-optimise if any of them is better.
+    # Fits are milliseconds, so this costs almost nothing.
+    # Each trial point gets its own full re-optimisation. Two cheaper
+    # variants were tried and both regressed quality on the fuzz suite:
+    # evaluating the four trials and re-optimising only from one that beats
+    # the incumbent gave 5 of 120 fixtures a worse optimum, and re-optimising
+    # only from the lowest-valued trial still gave 4. Near the bound the
+    # criterion can be *higher* at a probe point and still lead downhill into
+    # a better basin, so the probe cannot be used to choose between trials.
+    #
+    # The ladder reaches down to 1e-3 because a variance component can be
+    # genuinely small rather than zero. With trials starting at 0.05, a true
+    # optimum at theta = 0.028 was missed: every probe overshot it, and the
+    # optimiser slid back into the stationary point at the bound. Found by the
+    # wider stress sweep, not by the committed fuzz suite.
+    #
+    # This costs nothing on well-behaved data: the escape only runs when a
+    # variance component actually lands on the bound, and on clean fixtures a
+    # whole fit is still 10-11 objective evaluations.
+    for _ in range(3):
+        at_bound = [k for k in diag_k if best.x[k] <= lower[k] + 1e-10]
+        if not at_bound:
+            break
+        improved = False
+        for k in at_bound:
+            for trial in (1e-3, 1e-2, 0.05, 0.2, 0.6, 1.5):
+                cand = np.array(best.x, float)
+                cand[k] = trial
+                res = run(cand)
+                if res.fun < best.fun - 1e-10:
                     best = res
+                    improved = True
+        if not improved:
+            break
 
-        # ---- Boundary escape.
-        #
-        # At Lambda = 0 every term of the gradient vanishes identically: M = 0,
-        # so d(ldL2) = 0; u = 0, so d(pwrss) = 0; B = 0, so d(ldRX2) = 0. theta = 0
-        # is therefore a *stationary point of the profiled criterion whatever the
-        # data*, and a gradient-based optimiser that reaches it stops there and
-        # reports a zero projected gradient -- even when the true optimum has a
-        # perfectly ordinary non-zero variance.
-        #
-        # Singular fits are real and must be reportable (Dyestuff2 genuinely has
-        # a between-batch variance of zero), so we cannot just forbid the bound.
-        # Instead, whenever a diagonal entry lands on it, probe a few positive
-        # values along that coordinate and re-optimise if any of them is better.
-        # Fits are milliseconds, so this costs almost nothing.
-        # Each trial point gets its own full re-optimisation. Two cheaper
-        # variants were tried and both regressed quality on the fuzz suite:
-        # evaluating the four trials and re-optimising only from one that beats
-        # the incumbent gave 5 of 120 fixtures a worse optimum, and re-optimising
-        # only from the lowest-valued trial still gave 4. Near the bound the
-        # criterion can be *higher* at a probe point and still lead downhill into
-        # a better basin, so the probe cannot be used to choose between trials.
-        #
-        # The ladder reaches down to 1e-3 because a variance component can be
-        # genuinely small rather than zero. With trials starting at 0.05, a true
-        # optimum at theta = 0.028 was missed: every probe overshot it, and the
-        # optimiser slid back into the stationary point at the bound. Found by the
-        # wider stress sweep, not by the committed fuzz suite.
-        #
-        # This costs nothing on well-behaved data: the escape only runs when a
-        # variance component actually lands on the bound, and on clean fixtures a
-        # whole fit is still 10-11 objective evaluations.
-        for _ in range(3):
-            at_bound = [k for k in diag_k if best.x[k] <= lower[k] + 1e-10]
-            if not at_bound:
-                break
-            improved = False
-            for k in at_bound:
-                for trial in (1e-3, 1e-2, 0.05, 0.2, 0.6, 1.5):
-                    cand = np.array(best.x, float)
-                    cand[k] = trial
-                    res = run(cand)
-                    if res.fun < best.fun - 1e-10:
-                        best = res
-                        improved = True
-            if not improved:
+    # ---- Certify, and retry while the certificate fails.
+    #
+    # Stationarity is the acceptance test, so it drives the search rather than
+    # merely annotating its result. If the incumbent is not stationary, restart
+    # from perturbed points and keep the best certified one. This matters most
+    # for method="rust", whose line search is weaker than scipy's: it used to
+    # stop early at a point tens of deviance units worse and, before the flag
+    # was fixed, report success there.
+    gtol_abs = 1e-5 * max(1.0, float(n_obs) - (float(X.shape[1]) if reml else 0.0))
+
+    def certify(th):
+        sol = core.solution(list(np.asarray(th, float)), reml)
+        grad = np.asarray(sol["grad"], float)
+        pg = grad.copy()
+        on_bound = np.isfinite(lower) & (th <= lower + 1e-12) & (grad > 0)
+        pg[on_bound] = 0.0
+        gn = float(np.max(np.abs(pg))) if pg.size else 0.0
+        return sol, gn, gn <= gtol_abs
+
+    sol, grad_norm, stationary = certify(best.x)
+    if not stationary:
+        rng = np.random.default_rng(0)
+        for attempt in range(4):
+            cand = np.array(best.x, float)
+            # Perturb multiplicatively so the scale of each component is kept,
+            # and keep the diagonal strictly inside its bound.
+            cand *= np.exp(rng.normal(scale=0.5 + 0.5 * attempt, size=cand.size))
+            for k in diag_k:
+                cand[k] = max(cand[k], 1e-3)
+            res = run(cand)
+            s_new, gn_new, ok_new = certify(res.x)
+            better = res.fun < best.fun - 1e-10
+            if (ok_new and not stationary) or better:
+                best, sol, grad_norm, stationary = res, s_new, gn_new, ok_new
+            if stationary:
                 break
 
-        theta = np.asarray(best.x, float)
-        converged = bool(best.success)
-        message = str(best.message)
-        nit = int(best.nit)
-        nfev = state["nfev"]
+    theta = np.asarray(best.x, float)
+    converged = bool(stationary)
+    message = str(best.message)
+    nit = state["nit"]
+    nfev = state["nfev"]
 
-    sol = core.solution(list(theta), reml)
-
-    # Certify stationarity ourselves rather than trusting the optimiser's flag:
-    # a component pinned at its lower bound with the gradient pushing further
-    # into the bound is stationary, not a failure.
-    grad = np.asarray(sol["grad"], float)
-    lower = np.asarray(core.lower_bounds(), float)
-    pg = grad.copy()
-    at_bound = np.isfinite(lower) & (theta <= lower + 1e-12) & (grad > 0)
-    pg[at_bound] = 0.0
-    grad_norm = float(np.max(np.abs(pg))) if pg.size else 0.0
-    # Scale-free: the criterion is on a deviance scale, so compare relatively.
-    stationary = grad_norm <= max(1e-4, 1e-6 * abs(float(sol["deviance"])))
-    converged = bool(converged or stationary)
+    # Stationarity is the *only* convergence test: an optimiser's own success
+    # flag reports that its termination rule fired, not that the point is
+    # stationary. L-BFGS-B with a loose ftol, and the in-Rust optimiser's
+    # relative-change rule, both report success at points with a projected
+    # gradient in the tens. Taking `converged or stationary` -- as this once
+    # did -- let that flag overrule the gradient, which is exactly the failure
+    # mode the package exists to prevent.
+    #
+    # The tolerance is invariant to things that do not change the problem. The
+    # deviance is not such a thing: rescaling the response, or the fixed-effect
+    # columns under REML, adds a constant to the criterion while leaving its
+    # theta-gradient identical, so `1e-6 * abs(deviance)` would accept or
+    # reject the same stationary point depending on the units. It is scaled by
+    # dfree instead, which is what the criterion's theta-dependence is measured
+    # in.
     if not converged:
         warnings.warn(
             f"optimisation did not reach a stationary point "
-            f"(max |projected gradient| = {grad_norm:.3g}); {message}",
+            f"(max |projected gradient| = {grad_norm:.3g}, tolerance "
+            f"{gtol_abs:.3g}); {message}",
             ConvergenceWarning, stacklevel=3)
+
+    # A variance component sitting exactly on its bound is a *singular* fit: a
+    # legitimate boundary optimum, but one where the usual Wald intervals for
+    # the variance parameters do not apply, because the estimate is on the edge
+    # of the parameter space and its sampling distribution is not normal. lme4
+    # reports this separately from convergence (`isSingular`), and so do we --
+    # conflating the two is what drives people to delete random-effect terms.
+    tix_all = _theta_index(q)
+    singular = bool(any(
+        theta[k] <= lower[k] + 1e-10
+        for k, (r, c) in enumerate(tix_all) if r == c and np.isfinite(lower[k])))
 
     # Undo the internal column scaling. With Z -> Z D^-1 the fitted random
     # effects and their covariance are on the scaled coordinates: b = D^-1 b~
@@ -301,18 +433,35 @@ def fit_core(y, X, Z, codes, n_groups, reml=True, start_params=None,
     cov_re = np.asarray(sol["cov_re"], float) * np.outer(Dinv, Dinv)
     re_modes = np.asarray(sol["random_effects"], float) * Dinv
 
+    # Undo the fixed-effect conditioning. The response offset shifts beta back
+    # by the OLS coefficients it removed; the column scaling divides through.
+    beta = (np.asarray(sol["beta"], float) + beta_offset) / xscale
+    cov_beta = np.asarray(sol["cov_beta"], float) / np.outer(xscale, xscale)
+
+    # The REML criterion is *not* invariant to the column scaling, because it
+    # carries log|X'V^-1 X|: with X -> X D^-1 that determinant loses a factor
+    # det(D)^2, so the criterion is short by 2 * sum(log d). theta, sigma^2 and
+    # the random effects are unaffected, and the ML criterion has no such term.
+    # Restoring the constant is what keeps llf comparable with lme4 and
+    # statsmodels, and keeps REML deviances comparable between models fitted
+    # here in different units.
+    deviance = float(sol["deviance"])
+    ldrx2_shift = 2.0 * float(np.sum(np.log(xscale))) if reml else 0.0
+    deviance += ldrx2_shift
+
     out = {
         "core": core,
         "theta": theta,
         "scale_factors": dscale,
         "converged": converged,
+        "singular": singular,
         "message": message,
         "grad_norm": grad_norm,
         "nfev": nfev,
         "nit": nit,
-        "deviance": float(sol["deviance"]),
-        "beta": np.asarray(sol["beta"], float),
-        "cov_beta": np.asarray(sol["cov_beta"], float),
+        "deviance": deviance,
+        "beta": beta,
+        "cov_beta": cov_beta,
         "cov_re": cov_re,
         "random_effects": re_modes,
         "u": np.asarray(sol["u"], float),
