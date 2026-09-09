@@ -33,7 +33,7 @@ scalar) and the fixed [effects]"; `loglike(params, profile_fe=True)` is the
 default, `score`/`score_full`/`score_sqrt` are analytic, and the per-group
 random-effect cross-products are precomputed once into `_aex_r`/`_aex_r2`.
 
-So the difference is **not** profiling, and the 1.9x measured for the S0 -> S1
+So the difference is **not** profiling, and the 1.7x measured for the S0 -> S1
 step is not an isolated measurement of what profiling buys -- S0 also parses a
 formula and computes inference that S1 does not. It is reported as an upper
 bound, and labelled that way in `bench/stages.py`.
@@ -190,8 +190,9 @@ pass 2 from `l` and `rzx`. The stride falls from `3q^2 + 2qp + q` to
 
 Objective evaluations are 80%+ of a fit, so this is most of the end-to-end
 number. It also changed the story the staged benchmark tells: the Rust core was
-measured at 1.5x over batched NumPy before this change and 8.0x after. The
-allocator had been hiding what the compiled core was worth.
+measured at 1.5x over batched NumPy before this change, and 14.6x on the
+current, fairer staging. The allocator had been hiding what the compiled core
+was worth.
 
 ## What is compiled, and what is not
 
