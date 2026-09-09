@@ -257,3 +257,41 @@ def test_heavy_outliers_do_not_break_the_fit():
         warnings.simplefilter("ignore")
         r = mlm.mixedlm("y ~ x1", df, groups=df["g"]).fit()
     assert np.isfinite(r.llf) and r.scale > 0
+
+
+def test_boundary_fits_decline_to_invent_variance_standard_errors():
+    """At a singular fit the profiled Hessian need not be positive definite.
+
+    Inverting it anyway produces numbers that look like standard errors and
+    are not: the estimate is on the edge of the parameter space, where the
+    usual asymptotics do not hold. `bse_re` returns NaN there instead, and
+    `singular` says why.
+    """
+    import pathlib
+    data = pathlib.Path(__file__).resolve().parents[1] / "data"
+    if not data.is_dir():
+        pytest.skip("lme4 fixtures are repository-only")
+    df = pd.read_csv(data / "Dyestuff2.csv")
+    r = mlm.mixedlm("Yield ~ 1", df, groups=df["Batch"]).fit()
+
+    assert r.singular, "Dyestuff2 is the canonical boundary fit"
+    assert r.converged, "a boundary optimum is a converged fit"
+    assert np.all(np.isnan(np.asarray(r.bse_re))), \
+        "a standard error at the boundary would be fabricated"
+
+
+def test_interior_fits_still_report_variance_standard_errors():
+    """The check above must not suppress legitimate standard errors."""
+    import pathlib
+    data = pathlib.Path(__file__).resolve().parents[1] / "data"
+    if not data.is_dir():
+        pytest.skip("lme4 fixtures are repository-only")
+    df = pd.read_csv(data / "sleepstudy.csv")
+    r = mlm.mixedlm("Reaction ~ Days", df, groups=df["Subject"],
+                    re_formula="~Days").fit()
+
+    assert not r.singular
+    se = np.asarray(r.bse_re)
+    assert np.all(np.isfinite(se)) and np.all(se > 0)
+    # statsmodels reports 11.881 / 1.821 / 0.610 for this fit.
+    assert np.allclose(se, [11.881, 1.821, 0.610], rtol=5e-3)

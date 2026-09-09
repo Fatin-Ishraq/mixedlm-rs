@@ -576,10 +576,38 @@ def fit_core(
     # only ever look at the fixed effects. MixedLMResults calls it on first
     # access to bse_re and caches the result.
     def _compute_bse_re():
+        """Delta-method standard errors for the variance components.
+
+        The Hessian is *checked*, not merely inverted. At a genuine interior
+        minimum the profiled criterion's Hessian is positive definite, and its
+        inverse is a covariance. At a boundary optimum -- where a variance
+        component sits at zero, which is common and legitimate -- it need not
+        be, and inverting an indefinite matrix there yields numbers that look
+        like standard errors and are not. Those entries come back NaN.
+
+        A near-singular Hessian is treated the same way: it means the criterion
+        is nearly flat in some direction, so the corresponding variance
+        parameter is barely determined and reporting a small standard error for
+        it would be backwards.
+        """
         if q == 0:
             return None
+        nan_matrix = np.full((q, q), np.nan)
         try:
             H = _profiled_hessian(core, theta, reml)
+            if not np.all(np.isfinite(H)):
+                return nan_matrix
+
+            # Symmetrise: H comes from differencing a gradient, so the two
+            # off-diagonal estimates differ by rounding.
+            H = 0.5 * (H + H.T)
+            evals = np.linalg.eigvalsh(H)
+            # Positive definite, and not so ill-conditioned that the inverse is
+            # noise. 1e-10 relative is generous -- it only rejects directions in
+            # which the criterion is flat to ten digits.
+            if evals[0] <= 0 or evals[0] <= 1e-10 * evals[-1]:
+                return nan_matrix
+
             # deviance = -2 logL, so the observed information is H/2.
             cov_theta = 2.0 * np.linalg.inv(H)
             J, vech = _cov_re_jacobian(theta, q)
@@ -590,12 +618,12 @@ def fit_core(
             cov_vech = J @ cov_theta @ J.T
             dg = np.diag(cov_vech)
             se = np.sqrt(np.where(dg > 0, dg, np.nan))
-            M = np.full((q, q), np.nan)
+            M = nan_matrix.copy()
             for vi, (a, b) in enumerate(vech):
                 M[a, b] = M[b, a] = se[vi]
             return M
         except (np.linalg.LinAlgError, ValueError):
-            return np.full((q, q), np.nan)
+            return nan_matrix
 
     out["compute_bse_re"] = _compute_bse_re
     out["bse_re_unscaled"] = _compute_bse_re() if want_se_re else None
