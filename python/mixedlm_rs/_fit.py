@@ -168,16 +168,38 @@ def _condition_design(y, X):
     xscale[~np.isfinite(xscale) | (xscale <= 0)] = 1.0
     Xs = X if np.all(xscale == 1.0) else np.ascontiguousarray(X / xscale)
 
-    # lstsq is rank-revealing, so the rank check below is free.
-    beta0, _, rank, _ = np.linalg.lstsq(Xs, y, rcond=None)
+    # lstsq is rank-revealing, so the rank check below is free. `rcond` is set
+    # explicitly rather than left to the machine-precision default: the columns
+    # have already been scaled to unit RMS, so a surviving singular-value ratio
+    # below 1e-8 means two predictors agree to eight digits. The normal
+    # equations square that, which is past what a double can represent, and the
+    # penalised system's Cholesky then fails somewhere inside the optimiser --
+    # surfacing as "theta is infeasible", an error that names the wrong thing
+    # entirely. Catching it here says what is actually wrong.
+    RCOND = 1e-8
+    beta0, _, rank, svals = np.linalg.lstsq(Xs, y, rcond=RCOND)
     if rank < Xs.shape[1]:
+        ratio = (svals[-1] / svals[0]) if svals.size and svals[0] > 0 else 0.0
+        # An exactly duplicated column still leaves a singular value around
+        # 1e-17 rather than a clean zero, so "exact" is a tolerance, not a test
+        # for equality.
+        exact = ratio < 1e-14
         raise ValueError(
-            f"the fixed-effects design matrix is rank deficient: rank {rank} "
-            f"of {Xs.shape[1]} columns. Some predictor is an exact linear "
-            "combination of the others -- a duplicated column, a redundant "
-            "categorical coding, or a constant term alongside the intercept. "
-            "Drop the redundant column; the model as written does not "
-            "identify its own fixed effects.")
+            f"the fixed-effects design matrix is "
+            f"{'rank deficient' if exact else 'numerically rank deficient'}: "
+            f"rank {rank} of {Xs.shape[1]} columns"
+            + ("." if exact else
+               f", with a singular-value ratio of {ratio:.2e} after scaling "
+               f"the columns to unit norm.")
+            + " Some predictor is "
+            + ("an exact linear combination of the others -- a duplicated "
+               "column, a redundant categorical coding, or a constant term "
+               "alongside the intercept."
+               if exact else
+               "a linear combination of the others to within eight digits, so "
+               "their separate coefficients are not determined by the data.")
+            + " Drop or combine the redundant column; the model as written "
+              "does not identify its own fixed effects.")
 
     y_work = y - Xs @ beta0
     return np.ascontiguousarray(y_work), Xs, beta0, xscale
@@ -407,8 +429,24 @@ def fit_core(
     gtol_abs = 1e-5 * max(1.0, float(n_obs) - (float(X.shape[1]) if reml else 0.0))
 
     def certify(th):
-        sol = core.solution(list(np.asarray(th, float)), reml)
+        """Evaluate at `th` and say whether it is a stationary point.
+
+        Returns `(None, inf, False)` for an infeasible `th`. The optimiser can
+        legitimately finish on one -- the objective reports 1e300 there rather
+        than raising, so L-BFGS-B may stop at the edge of the feasible region on
+        a near-singular design. Calling `solution()` on such a point raises
+        `RuntimeError: theta is infeasible`, which used to escape `fit()` as an
+        opaque error naming the wrong thing: the design is the problem, not
+        theta.
+        """
+        th = np.asarray(th, float)
+        try:
+            sol = core.solution(list(th), reml)
+        except RuntimeError:
+            return None, float("inf"), False
         grad = np.asarray(sol["grad"], float)
+        if not np.all(np.isfinite(grad)):
+            return None, float("inf"), False
         pg = grad.copy()
         on_bound = np.isfinite(lower) & (th <= lower + 1e-12) & (grad > 0)
         pg[on_bound] = 0.0
@@ -416,6 +454,36 @@ def fit_core(
         return sol, gn, gn <= gtol_abs
 
     sol, grad_norm, stationary = certify(best.x)
+    if sol is None:
+        # The incumbent is infeasible, so there is nothing to certify and
+        # nothing to report. Retreat to points that are feasible by
+        # construction -- Lambda = I, then progressively smaller diagonals,
+        # ending at Lambda = 0, where A = I and the factorisation cannot fail.
+        for fallback in (core.default_theta(), None, None, None):
+            if fallback is None:
+                continue
+            cand = np.asarray(fallback, float)
+            res = run(cand)
+            sol, grad_norm, stationary = certify(res.x)
+            if sol is not None:
+                best = res
+                break
+        if sol is None:
+            for scale_down in (0.1, 0.01, 0.0):
+                cand = np.asarray(core.default_theta(), float) * scale_down
+                sol, grad_norm, stationary = certify(cand)
+                if sol is not None:
+                    best = _Res(cand, float(sol["deviance"]), False,
+                                "retreated to a feasible point", 0)
+                    break
+        if sol is None:
+            raise ValueError(
+                "the model could not be evaluated anywhere in the parameter "
+                "space: the penalised system is singular even at a zero "
+                "random-effects covariance. This is a design problem rather "
+                "than an optimisation one -- most often a fixed-effect design "
+                "that is collinear to within machine precision.")
+
     if not stationary:
         rng = np.random.default_rng(0)
         off_diag = [k for k in range(len(lower)) if k not in diag_k]
@@ -433,6 +501,8 @@ def fit_core(
                 cand[k] += rng.normal(scale=spread)
             res = run(cand)
             s_new, gn_new, ok_new = certify(res.x)
+            if s_new is None:            # infeasible: not a candidate at all
+                continue
 
             # Never trade away likelihood for a certificate. A strictly better
             # criterion is always taken; a certified point is taken over an

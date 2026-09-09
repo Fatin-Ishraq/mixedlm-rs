@@ -140,13 +140,17 @@ a warning.
 
 | n | groups | statsmodels | mixedlm-rs | |
 |---:|---:|---:|---:|---|
-| 10,000 | 500 | 1.73 s | **0.011 s** | 153x |
-| 40,000 | 5,000 | 11.64 s | **0.017 s** | 684x |
-| 100,000 | 20,000 | 41.86 s | **0.041 s** | 1032x |
-| 200,000 | 50,000 | 103.80 s | **0.072 s** | 1449x |
-| 500,264 | **125,066** | — | **0.180 s** | |
+| 10,000 | 500 | 2.31 s | **0.011 s** | 218x |
+| 40,000 | 5,000 | 16.59 s | **0.019 s** | 870x |
+| 100,000 | 20,000 | 61.00 s | **0.042 s** | 1454x |
+| 200,000 | 50,000 | 160.48 s | **0.087 s** | 1836x |
+| 500,264 | **125,066** | — | **0.197 s** | |
 
-Every row is checked for agreement before it is timed.
+Agreement is **enforced**, not reported: the benchmark aborts rather than print
+a timing if the fixed effects differ by more than 0.05 of a standard error, the
+variance components by more than 2%, or our criterion falls below the
+reference's. On every row above it does not — the largest fixed-effect
+difference is 3.8e-05 standard errors, and our log-likelihood is never lower.
 
 That last row matches the *size* reported in
 [statsmodels#9097](https://github.com/statsmodels/statsmodels/issues/9097) —

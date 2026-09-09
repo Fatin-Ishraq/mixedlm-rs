@@ -77,10 +77,23 @@ than missing features, and several were being reported as successes.
   `method="rust"` still returned false zero variances marked converged.
 - Extra starts were tried only after a reported failure, so a successful stop at
   a worse optimum was never challenged.
-- Rank-deficient fixed effects surfaced as `RuntimeError: theta is infeasible`.
+- Rank-deficient fixed effects surfaced as `RuntimeError: theta is infeasible`,
+  an error naming the wrong thing entirely. Exact and numerical rank deficiency
+  are now both detected before the optimiser starts, and reported distinctly.
+- An infeasible point reached by the optimiser on a near-singular design let a
+  bare `RuntimeError` escape `fit()`. Infeasibility is now handled: the driver
+  retreats to points that are feasible by construction, and only raises -- with
+  a message naming the design -- when nothing at all can be evaluated.
+- `bse_re` inverted the profiled Hessian without checking it. At a boundary
+  optimum it need not be positive definite, and the result looked like standard
+  errors without being any. Non-positive or numerically flat directions now
+  return NaN.
 - The identifiability rule was wrong in both directions: `n <= q*m` neither
   implies a divergent likelihood (the criterion is *flat*) nor catches a
   confounded single group.
+- Random starting values were built by multiplying the identity theta, so every
+  off-diagonal stayed exactly zero and no start ever explored a correlated
+  random-effects structure.
 
 **Safety**
 

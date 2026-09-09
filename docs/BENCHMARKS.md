@@ -16,30 +16,44 @@ Reproduce with `python bench/scaling.py` and `python bench/stages.py`.
 | CPU | AMD Ryzen 5 5600G, 6 cores / 12 threads, AVX2, no GPU |
 | Python | 3.14.3 |
 | numpy / scipy / statsmodels | 2.5.2 / 1.18.1 / 0.15.0 |
-| R / rpy2 / pymer4 | 4.6.1 / 3.6.7 / 0.9.2 |
+| R / lme4 | 4.6.1 / 2.0.6 |
+| rpy2 / pymer4 | 3.6.7 / 0.9.2 |
+| threads | rayon default (12); no thread pinning |
 
 ## Scaling in the group count
 
 `y ~ x1 + x2` with a random intercept and slope (`re_formula="~x1"`).
 
-| n | groups | statsmodels | conv | mixedlm-rs | conv | speedup | agreement |
-|---:|---:|---:|:---:|---:|:---:|---:|---:|
-| 2,000 | 100 | 0.34 s | True | **0.011 s** | True | **30x** | 6.6e-06 |
-| 10,000 | 500 | 1.73 s | True | **0.011 s** | True | **153x** | 4.5e-07 |
-| 20,000 | 1,000 | 2.63 s | True | **0.012 s** | True | **211x** | 3.4e-07 |
-| 40,000 | 5,000 | 11.64 s | True | **0.017 s** | True | **684x** | 2.0e-06 |
-| 100,000 | 20,000 | 41.86 s | True | **0.041 s** | True | **1032x** | 3.8e-05 |
-| 200,000 | 50,000 | 103.80 s | True | **0.072 s** | True | **1449x** | 1.2e-05 |
-| 500,264 | **125,066** | not run | — | **0.180 s** | True | — | — |
+| n | groups | statsmodels | conv | mixedlm-rs | conv | speedup | fe (SEs) | re (rel) | dlogLik |
+|---:|---:|---:|:---:|---:|:---:|---:|---:|---:|---:|
+| 2,000 | 100 | 0.39 s | True | **0.012 s** | True | **33x** | 6.6e-06 | 7.6e-05 | +1.2e-06 |
+| 10,000 | 500 | 2.31 s | True | **0.011 s** | True | **218x** | 4.5e-07 | 1.4e-05 | +2.8e-07 |
+| 20,000 | 1,000 | 4.00 s | True | **0.018 s** | True | **227x** | 3.4e-07 | 2.6e-05 | +1.1e-06 |
+| 40,000 | 5,000 | 16.59 s | True | **0.019 s** | True | **870x** | 2.0e-06 | 1.8e-05 | +2.3e-06 |
+| 100,000 | 20,000 | 61.00 s | True | **0.042 s** | True | **1454x** | 3.8e-05 | 4.3e-05 | +5.1e-05 |
+| 200,000 | 50,000 | 160.48 s | True | **0.087 s** | True | **1836x** | 1.2e-05 | 3.7e-05 | +6.9e-05 |
+| 500,264 | **125,066** | not run | — | **0.197 s** | True | — | — | — | — |
 
-*Agreement* is the largest fixed-effect difference expressed in units of its own
-standard error.
+- *fe (SEs)* is the largest fixed-effect difference in units of its own
+  standard error.
+- *re (rel)* is the largest `cov_re` difference relative to its own scale.
+  Comparing only the fixed effects, as this table used to, lets two fits agree
+  on the mean model while disagreeing about the thing a mixed model is for.
+- *dlogLik* is ours minus theirs. It is non-negative on every row.
+
+**Every one of these is enforced, not printed.** The script aborts and refuses to
+report timings if a row exceeds 0.05 SEs on the fixed effects, 2% on `cov_re`,
+or falls below the reference's criterion. A benchmark that prints an agreement
+column without checking it can publish a fast wrong answer, and this one used
+to.
 
 The last row is the scale from
 [statsmodels#9097](https://github.com/statsmodels/statsmodels/issues/9097),
 where a user reported `mixedlm` taking **41 minutes** on 125,066 groups against
-1–2 seconds for R's `lmer`. It is not run against the reference here because
-that is the point.
+1–2 seconds for R's `lmer`. It is synthetic data at that group count, not their
+categorical-design dataset, and the 41 minutes is their report rather than a
+measurement made here — so this row shows that the size is not the obstacle, and
+nothing more than that.
 
 ## Against lme4 and pymer4
 
@@ -106,7 +120,9 @@ writable R library present wherever the code runs.
 - `pymer4` 0.9.2 exposes its fit statistics differently than the benchmark
   expected, so its `logLik` came back `NaN` and is not compared. The correctness
   comparison rests on the `lme4` column, which is the same fit.
-- Versions: R 4.6.1, lme4 1.1-x from CRAN, rpy2 3.6.7, pymer4 0.9.2.
+- Versions: R 4.6.1, lme4 **2.0.6**, rpy2 3.6.7, pymer4 0.9.2. An earlier
+  revision of this file recorded "lme4 1.1-x", which was a guess rather
+  than a reading of the installed package.
 
 ## Where the win actually comes from
 

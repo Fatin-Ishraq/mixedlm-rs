@@ -83,16 +83,31 @@ which is what `statsmodels.MixedLM` is.
   sampling distribution is skewed and degenerate at the boundary. lme4 declines
   to report these at all. `results.singular` flags when a component is at the
   boundary; treat those rows as point estimates, not as inputs to a *z*-test.
-- **The optimum is not certified global.** The fit checks that it stopped at a
-  stationary point, and searches from several starts with a boundary-escape
-  ladder, but the profiled criterion can be multimodal and nothing here proves
-  the reported optimum is the best one.
+- **The optimum is not certified global.** The fit verifies that it stopped at a
+  stationary point and restarts when it did not, and it probes away from the
+  boundary where the criterion has a stationary point for any data at all. That
+  is a local certificate, not a global one: the profiled criterion can be
+  multimodal and nothing here proves the reported optimum is the best one.
+  Additional random starts are available via `n_starts=`, though across the 120
+  randomised fuzz fixtures they changed no answer.
 
 ## Numerical scope
 
-- **Rank-deficient fixed effects are refused**, not pivoted away. An exactly
-  collinear design raises a `ValueError` naming the rank deficiency; statsmodels
-  and lme4 will drop columns instead. Drop the redundant column yourself.
+- **Rank-deficient fixed effects are refused**, not pivoted away. This covers
+  both exact collinearity — a duplicated column, a redundant categorical
+  coding, a constant term alongside the intercept — and *numerical* rank
+  deficiency, where two predictors agree to within eight digits after the
+  columns are scaled to unit norm. Both raise a `ValueError` that names which
+  case it is and reports the singular-value ratio. statsmodels and lme4 drop
+  columns instead; here you drop the redundant one yourself.
+
+  The numerical threshold exists because the normal equations square the
+  condition number: a design that is collinear to 1e-9 is past what a double
+  can represent once squared, and the penalised Cholesky then fails inside the
+  optimiser and surfaces as `theta is infeasible` — an error naming entirely
+  the wrong thing. A design collinear to about 1e-6 still fits, and may report
+  `converged=False`, which is the honest answer for a criterion that is nearly
+  flat in one direction.
 - **Precision is bounded by the data, not the algorithm.** The response is
   offset by its OLS fit and the fixed-effect columns are RMS-scaled before any
   cross-product is formed, so results are invariant to response translation. But
