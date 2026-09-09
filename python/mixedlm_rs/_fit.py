@@ -53,6 +53,20 @@ def _starts(core, start_params, n_starts):
     cost almost nothing (each fit is milliseconds) and remove the boundary cases
     where a single start stalls -- exactly the situation in which statsmodels
     retries bfgs, then lbfgs, then cg, and gives up.
+
+    Diagonal and off-diagonal entries are perturbed differently, and they have
+    to be. The default theta is the identity, so its off-diagonals are exactly
+    zero, and a purely *multiplicative* perturbation -- which is what this did
+    -- leaves every one of them at zero no matter how many starts are drawn. No
+    start ever explored a correlated random-effects structure, which is the one
+    case where a second start is most likely to help. Off-diagonals are
+    therefore perturbed additively, and both signs are reachable: the
+    correlation between a random intercept and a random slope is negative at
+    least as often as it is positive.
+
+    This is a heuristic search and not a certificate. Nothing here proves the
+    result is the global optimum of a criterion that genuinely can be
+    multimodal; see docs/LIMITATIONS.md.
     """
     base = np.asarray(core.default_theta(), float)
     out = []
@@ -62,9 +76,14 @@ def _starts(core, start_params, n_starts):
     if n_starts > 1:
         rng = np.random.default_rng(0)
         lower = np.asarray(core.lower_bounds(), float)
+        bounded = np.isfinite(lower)          # the diagonal entries
         for _ in range(n_starts - 1):
-            cand = base * rng.uniform(0.25, 3.0, base.size)
-            cand[np.isfinite(lower)] = np.maximum(cand[np.isfinite(lower)], 1e-3)
+            cand = base.copy()
+            cand[bounded] = np.maximum(
+                base[bounded] * rng.uniform(0.25, 3.0, int(bounded.sum())), 1e-3)
+            free = ~bounded
+            if free.any():
+                cand[free] = base[free] + rng.uniform(-0.6, 0.6, int(free.sum()))
             out.append(cand)
     return out
 

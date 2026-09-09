@@ -175,10 +175,18 @@ structural, not the language:
 
 | step | multiplier |
 |---|---:|
-| profiled REML alone | 1.9x |
-| + batched block-diagonal Cholesky | **33.4x** |
-| + Rust core | 8.0x |
-| + analytic gradient | 3.3x |
+| profiled REML — *upper bound only* | 1.7x |
+| + batched block-diagonal Cholesky | **30.8x** |
+| + Rust core | 14.6x |
+| + analytic gradient | 2.8x |
+| **end to end, like for like** | **182x** |
+
+That last row compares the public API against `statsmodels` on the same
+DataFrame, both parsing a formula, fitting, and computing inference. An earlier
+version of this table published **1844x** for the same row, which was not a
+like-for-like comparison: it measured the bare Rust objective against
+statsmodels doing all of that extra work. [What was wrong, in
+detail →](docs/BENCHMARKS.md)
 
 The formulation is `lme4`'s: eliminate the fixed effects and `sigma^2`
 analytically so the optimiser sees only the 1–3 covariance parameters, and

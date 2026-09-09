@@ -129,10 +129,15 @@ The `pwrss` term uses the envelope theorem: `beta` and `u` minimise the penalise
 least squares problem at fixed `theta`, so only the explicit `theta` dependence
 contributes.
 
-This cuts objective evaluations from 72–148 down to 10–12. Because a wrong
-gradient converges quietly to the wrong answer rather than crashing, it is
-checked against central finite differences across `q = 1..3`, `p = 1,2,5,10`,
-both criteria, five thetas, and at the variance-zero boundary.
+This cuts objective evaluations from 44–64 down to 11–13 against this
+package's own finite-difference stage (see BENCHMARKS.md). The earlier
+figure of "72–148 down to 10–12" quoted here did not match the table it
+referred to.
+
+Because a wrong gradient converges quietly to the wrong answer rather than
+crashing, it is checked against central finite differences over the full
+product of `q = 1..3` and `p = 1,2,5,10`, both criteria, four random feasible
+thetas each, plus five fixed thetas and the variance-zero boundary.
 
 ## Two numerical traps, both found by fuzzing
 

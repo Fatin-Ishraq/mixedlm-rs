@@ -110,51 +110,78 @@ writable R library present wherever the code runs.
 
 ## Where the win actually comes from
 
-Reporting a single speedup number would misattribute it. Each stage below was
-measured on the same fixtures:
+Reporting a single speedup number would misattribute it. Each stage below is
+measured on the same fixtures, and — after the corrections described at the end
+of this section — on the same amount of work.
 
 | stage | what it is | isolates |
 |---|---|---|
-| S0 | `statsmodels.MixedLM` | baseline |
-| S1 | profiled REML, pure NumPy, per-group Python loop | the algorithmic win |
+| S0 | `statsmodels.MixedLM`, from a DataFrame | baseline |
+| S1 | profiled REML, pure NumPy, per-group Python loop | the algorithmic step |
 | S2 | S1 + batched block-diagonal linear algebra | the structural win |
 | S3 | Rust core, numeric gradient | the language win |
-| S4 | Rust core, analytic gradient | the beyond-lme4 win |
+| S4 | Rust core, analytic gradient | what the gradient buys |
 | S5 | Rust core, in-Rust optimiser | owning the whole loop |
+| S6 | **the public API, from a DataFrame** | the like-for-like end-to-end row |
 
-| n | groups | S0 | conv | S1 | S2 | S3 | S4 | S5 | S4/S0 |
-|---:|---:|---:|:---:|---:|---:|---:|---:|---:|---:|
-| 10,000 | 500 | 6.02 s | True | 2.621 s | 0.098 s | 0.0130 s | **0.0030 s** | 0.0041 s | 2023x |
-| 20,000 | 1,000 | 21.55 s | **False** | 2.130 s | 0.052 s | 0.0114 s | **0.0034 s** | 0.0072 s | 6369x |
-| 20,000 | 2,000 | 5.35 s | True | 3.528 s | 0.106 s | 0.0131 s | **0.0041 s** | 0.0093 s | 1301x |
-| 40,000 | 5,000 | 13.72 s | True | 7.196 s | 0.294 s | 0.0275 s | **0.0096 s** | 0.0187 s | 1426x |
-| 100,000 | 20,000 | 45.07 s | True | 39.211 s | 0.925 s | 0.0801 s | **0.0244 s** | 0.0705 s | 1844x |
+**What is comparable to what.** S1–S5 all start from the same
+`(y, X, Z, codes)` and each builds what it needs from there, including the
+cross-products. S0 and S6 both start from a DataFrame, parse a formula, fit, and
+compute inference. **S0 is not comparable to S4** — it does work S4 never
+does — so the end-to-end ratio is `S0/S6`, not `S0/S4`.
 
-**Median stage-to-stage multipliers:**
+| n | groups | S0 | conv | S1 | S2 | S3 | S4 | S5 | **S6** | S0/S6 |
+|---:|---:|---:|:---:|---:|---:|---:|---:|---:|---:|---:|
+| 10,000 | 500 | 8.69 s | True | 2.773 s | 0.099 s | 0.0182 s | **0.0045 s** | 0.0062 s | 0.0236 s | 368x |
+| 20,000 | 1,000 | 30.58 s | **False** | 3.263 s | 0.076 s | 0.0120 s | **0.0045 s** | 0.0071 s | 0.0476 s | 643x |
+| 20,000 | 2,000 | 5.37 s | True | 3.646 s | 0.108 s | 0.0144 s | **0.0049 s** | 0.0111 s | 0.0563 s | 95x |
+| 40,000 | 5,000 | 14.36 s | True | 7.463 s | 0.521 s | 0.0241 s | **0.0104 s** | 0.0335 s | 0.0853 s | 168x |
+| 100,000 | 20,000 | 48.17 s | True | 63.304 s | 1.433 s | 0.0656 s | **0.0250 s** | 0.0766 s | 0.2449 s | 197x |
+
+Best of three for **every** stage, including the slow ones.
+
+**Median stage-to-stage multipliers**, over the four fixtures where the baseline
+converged — the fifth is excluded, because a speedup against a fit that did not
+happen is not a speedup:
 
 | step | multiplier |
 |---|---:|
-| S0 → S1 profiled REML alone | **1.9x** |
-| S1 → S2 + batched block Cholesky | **33.4x** |
-| S2 → S3 + Rust core | **8.0x** |
-| S3 → S4 + analytic gradient | **3.3x** |
-| S0 → S4 end to end | **1844x** |
+| S0 → S1 profiled REML — **upper bound only** | 1.7x |
+| S1 → S2 + batched block Cholesky | **30.8x** |
+| S2 → S3 + Rust core | 14.6x |
+| S3 → S4 + analytic gradient | 2.8x |
+| **S0 → S6 end to end, like for like** | **182.5x** |
 
-The largest single factor is still **structural, not the language**: profiling
-`beta` and `sigma^2` out is worth only 1.9x on its own, while exploiting the
-block-diagonal structure is worth 33.4x.
+The largest single factor is **structural, not the language**: exploiting the
+block-diagonal structure is worth 30.8x, and it is reproducible by anyone in
+NumPy — `proto/preml.py` is that implementation, in about 200 lines. Saying so
+is what makes the rest of the table credible.
 
-The Rust core's contribution was originally measured at 1.5x. It is now 8.0x —
-not because the language changed, but because the first implementation allocated
-about ten small `Vec`s per group per objective evaluation, which at 125,000
-groups is roughly a million allocations per evaluation. Moving every per-group
-intermediate into one preallocated flat buffer, with rayon fold accumulators
-instead of per-group temporaries, made a single objective evaluation 8–12x
-faster and revealed what the compiled core was actually worth.
+`S0 → S1` is labelled an upper bound because S0 also parses a formula and
+computes inference that S1 skips entirely, so some non-algorithmic work is
+attributed to profiling. It cannot be read as "profiling alone is worth 1.7x".
 
-S1 and S2 are reproducible by anyone in NumPy — `proto/preml.py` is the
-implementation, in about 200 lines. Saying so is what makes the rest of the
-table credible.
+### What was wrong with this table before
+
+Four things, all of which inflated it:
+
+1. **S3–S5 were handed a pre-built `LmmCore`** while S1 and S2 built their own
+   cross-products inside the timed region. The "language win" was therefore
+   partly credited with work the compiled stages were simply not charged for.
+   Every stage now builds what it needs.
+2. **S0 and S1 were timed once**, the rest best-of-three.
+3. **`S0/S4` was reported as "end to end", at 1844x.** It is not an end-to-end
+   comparison, and that number should not have been published. The honest
+   figure is 182.5x.
+4. **A non-converged S0 row contributed a 6369x ratio** to the medians, despite
+   the surrounding prose saying such comparisons are inappropriate.
+
+Agreement is now *enforced* rather than printed: the script aborts instead of
+reporting timings if any stage's criterion is worse than S4's, or if the
+coefficients disagree at the same optimum. Where we reach a **better** optimum
+than statsmodels the coefficients legitimately differ, and that is reported
+rather than treated as a failure — on the 10,000-row fixture we reach a
+deviance 152.5 lower.
 
 ## What the analytic gradient buys
 
@@ -162,14 +189,24 @@ Objective evaluations for a whole fit:
 
 | n | groups | S3 numeric | S4 analytic | S5 in-Rust optimiser |
 |---:|---:|---:|---:|---:|
-| 10,000 | 500 | 60 | **11** | 35 |
-| 20,000 | 1,000 | 60 | **14** | 36 |
-| 20,000 | 2,000 | 44 | **11** | 36 |
-| 40,000 | 5,000 | 80 | **16** | 61 |
-| 100,000 | 20,000 | 48 | **11** | 39 |
+| 10,000 | 500 | 64 | **11** | 35 |
+| 20,000 | 1,000 | 44 | **11** | 36 |
+| 20,000 | 2,000 | 56 | **11** | 36 |
+| 40,000 | 5,000 | 60 | **13** | 59 |
+| 100,000 | 20,000 | 56 | **11** | 39 |
 
-`lme4` and `MixedModels.jl` both optimise `theta` derivative-free (BOBYQA), so
-they pay the numeric-gradient evaluation count rather than the analytic one.
+**What this does and does not measure.** S3 is *this package's own*
+finite-difference L-BFGS-B, so the 44-64 column is the cost of not having a
+gradient inside this optimiser. It is **not** a measurement of BOBYQA, which is
+a different algorithm with a different evaluation profile, and no claim is made
+here about lme4's or MixedModels.jl's evaluation counts -- neither was measured.
+
+What is true is the qualitative point: `lme4` and `MixedModels.jl` both optimise
+`theta` derivative-free, so neither uses a gradient of the profiled criterion,
+while this package does. The gradient itself is not novel -- Bates et al. derive
+the profiled ML version in the lme4 paper (eq. 46-48), and `MixedModels.jl`
+documents derivative support. What is here is a REML gradient specialised to the
+block structure and computed in the passes that already produce the criterion.
 
 ## Objective evaluation cost
 
