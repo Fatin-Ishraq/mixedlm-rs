@@ -14,10 +14,21 @@ wrong.
 So the bar is split:
 
 1. Where statsmodels converges, we must agree with it.
-2. Where it does not, we must converge — and that is asserted, not compared.
+2. Where it does not, there is nothing to compare against — so the result is
+   certified *independently*, from the deviance alone: a finite-difference
+   projected gradient and a spread of perturbations, neither of which uses the
+   analytic gradient or our own convergence flag. Asserting our own flag here,
+   which is what this used to do, is circular precisely where independence
+   matters most.
 3. Where we find a strictly better optimum, the parameters legitimately differ,
    and demanding agreement would be asserting that we reproduce a worse fit.
 4. The primary oracle is **lme4's published fits**, not statsmodels.
+
+One caveat on the framing above, which the reviewer was right to press: a
+competing optimiser's convergence *warning* does not by itself mean its
+estimates are wrong. What justifies preferring our answer in those cases is the
+criterion — where we report a higher likelihood on the same model and data, that
+is a checkable fact, and it is what the tables below classify on.
 
 ## Primary oracle: lme4's published datasets
 

@@ -122,8 +122,19 @@ rate is not an estimate of how often statsmodels fails on ordinary published
 datasets, and should not be read as one.
 
 Singular fits — a variance component genuinely at zero — are reported as
-converged, because a boundary optimum **is** a converged fit. That distinction
-is what stops people from mangling their model to silence a warning.
+converged, because a boundary optimum **is** a converged fit. That is what stops
+people from mangling their model to silence a warning. They are also flagged
+*separately*, as `results.singular`, because the estimate being legitimate does
+not make the usual Wald intervals around it legitimate: at the boundary the
+sampling distribution of a variance parameter is degenerate, and `bse_re`
+returns `NaN` there rather than a number that would be read as a standard error.
+`lme4` draws the same distinction with `isSingular`.
+
+**Convergence is certified, not reported.** The optimiser's own success flag is
+never taken as the answer: it says its termination rule fired, not that the
+point is stationary. The projected gradient is checked against a tolerance that
+does not depend on the units, and a failed check triggers a restart rather than
+a warning.
 
 ## Speed
 
