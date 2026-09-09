@@ -1,0 +1,227 @@
+name: release
+
+# Publishing is a one-way door: a version number, once uploaded to PyPI, can
+# never be reused even after a delete. So this workflow builds everything,
+# *installs and smoke-tests the actual artifacts*, and only then publishes.
+#
+# Two ways in:
+#   - push a tag `v0.1.0`            -> builds, verifies, publishes to PyPI
+#   - run it by hand (workflow_dispatch) -> builds, verifies, and publishes to
+#     TestPyPI or nothing at all, so the whole path can be exercised without
+#     spending a version number.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish_to:
+        description: "Where to publish after the artifacts verify"
+        type: choice
+        options: [nowhere, testpypi, pypi]
+        default: nowhere
+
+# Nothing is granted by default; the publish job asks for exactly what it needs.
+permissions: {}
+
+jobs:
+  # The tag says 0.1.0 and pyproject says 0.1.1 is a mistake you cannot take
+  # back once it is on PyPI, so it fails here instead.
+  check-version:
+    name: tag matches the declared version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare the tag with pyproject and Cargo
+        run: |
+          python - <<'PY'
+          import os, re, sys, tomllib, pathlib
+
+          declared = tomllib.loads(
+              pathlib.Path("pyproject.toml").read_text())["project"]["version"]
+          cargo = tomllib.loads(
+              pathlib.Path("Cargo.toml").read_text())["package"]["version"]
+          if declared != cargo:
+              sys.exit(f"pyproject says {declared}, Cargo.toml says {cargo}")
+
+          ref = os.environ.get("GITHUB_REF", "")
+          if ref.startswith("refs/tags/"):
+              tag = ref.removeprefix("refs/tags/").lstrip("v")
+              if tag != declared:
+                  sys.exit(f"tag v{tag} does not match version {declared}")
+              print(f"tag v{tag} matches pyproject and Cargo.toml")
+          else:
+              print(f"not a tag build; version {declared} is consistent")
+          PY
+
+  wheels:
+    name: wheel ${{ matrix.platform }}-${{ matrix.target }}
+    needs: check-version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The extension is built abi3-py310, so ONE wheel per platform
+          # covers Python 3.10 through 3.14 -- there is no Python-version axis
+          # here, unlike in ci.yml where the point is to test each of them.
+          - { platform: linux,   target: x86_64,  runner: ubuntu-latest }
+          - { platform: linux,   target: aarch64, runner: ubuntu-latest }
+          - { platform: macos,   target: x86_64,  runner: macos-latest }
+          - { platform: macos,   target: aarch64, runner: macos-latest }
+          - { platform: windows, target: x64,     runner: windows-latest }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # maturin-action, not a bare `maturin build`, specifically for Linux:
+      # it builds inside a manylinux container. A wheel built directly on
+      # ubuntu-latest is tagged for that runner's glibc (2.39), which PyPI
+      # accepts but which excludes every older distribution -- so it installs
+      # for almost nobody. `manylinux: auto` picks a widely compatible base.
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          manylinux: auto
+          sccache: true
+      - name: Show the tags the build produced
+        shell: bash
+        run: ls -la dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.platform }}-${{ matrix.target }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  sdist:
+    name: source archive
+    needs: check-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      # The lme4 fixtures under data/ are GPL-2 and this project is MIT. This
+      # is also checked in ci.yml; it is repeated here because this is the
+      # copy that would actually be published.
+      - name: The archive ships nothing GPL
+        run: |
+          python - <<'PY'
+          import glob, tarfile
+          [path] = glob.glob("dist/*.tar.gz")
+          with tarfile.open(path) as t:
+              names = t.getnames()
+          leaked = [n for n in names if "/data/" in n or n.endswith("/data")]
+          assert not leaked, f"GPL-2 fixtures leaked into the sdist: {leaked}"
+          print(f"{path}: {len(names)} entries, no data/")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  verify:
+    name: artifacts install and work
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          path: collected
+          merge-multiple: true
+      - name: Every artifact carries the upstream licence notices
+        run: |
+          python - <<'PY'
+          import glob, zipfile, sys
+
+          wheels = sorted(glob.glob("collected/*.whl"))
+          assert wheels, "no wheels were produced"
+          bad = []
+          for w in wheels:
+              with zipfile.ZipFile(w) as z:
+                  names = z.namelist()
+                  notice = next(
+                      (n for n in names
+                       if n.endswith("THIRD-PARTY-LICENSES.md")), None)
+                  if not notice:
+                      bad.append(f"{w}: no upstream notices")
+                      continue
+                  body = z.read(notice).decode("utf-8")
+              # The extension statically links BSD-2-Clause and MIT crates,
+              # and both require their notice text to travel with a binary.
+              if "Redistribution and use in source and binary forms" not in body:
+                  bad.append(f"{w}: no BSD-2-Clause conditions")
+              if body.count("Copyright") < 5:
+                  bad.append(f"{w}: only {body.count('Copyright')} notices")
+              if "\x1b[" in body:
+                  bad.append(f"{w}: notices contain ANSI escape sequences")
+          if bad:
+              sys.exit("\n".join(bad))
+          print(f"{len(wheels)} wheels, all carrying upstream notices")
+          PY
+      - name: Install this runner's wheel and run the documented example
+        run: |
+          python -m pip install --upgrade pip
+          # --no-index: install the built artifact, never PyPI. Without it a
+          # resolver fallback could quietly test a different package.
+          python -m pip install --no-index --find-links collected mixedlm-rs
+          cd "$(mktemp -d)"          # outside the checkout, so the import
+                                     # cannot come from python/mixedlm_rs/
+          python - <<'PY'
+          import numpy as np, pandas as pd, mixedlm_rs as mlm
+          rng = np.random.default_rng(0)
+          g = np.repeat(np.arange(20), 10)
+          x = rng.normal(size=200)
+          y = 1 + 0.5 * x + rng.normal(size=20)[g] + rng.normal(size=200) * 0.5
+          d = pd.DataFrame({"y": y, "x": x, "g": g})
+          r = mlm.mixedlm("y ~ x", d, groups=d["g"], re_formula="~x").fit()
+          assert r.converged, "the documented example did not converge"
+          assert abs(r.fe_params[1] - 0.5) < 0.15, r.fe_params
+          print(mlm.__file__)
+          print(r.summary())
+          PY
+
+  publish:
+    name: publish to ${{ inputs.publish_to || 'pypi' }}
+    needs: verify
+    if: >-
+      github.event_name == 'push' ||
+      inputs.publish_to == 'pypi' ||
+      inputs.publish_to == 'testpypi'
+    runs-on: ubuntu-latest
+    # The environment is what makes a required reviewer possible: turn on
+    # "Required reviewers" for it in Settings -> Environments and no upload
+    # happens until a human clicks approve.
+    environment:
+      name: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_to == 'testpypi') && 'testpypi' || 'pypi' }}
+      url: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_to == 'testpypi') && 'https://test.pypi.org/p/mixedlm-rs' || 'https://pypi.org/p/mixedlm-rs' }}
+    permissions:
+      # Trusted Publishing: GitHub mints a short-lived OIDC token that PyPI
+      # verifies against the publisher you registered. There is no API token
+      # to create, paste, rotate, or leak.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: ls -la dist/
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: >-
+            ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_to == 'testpypi')
+                && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
+          # Fail loudly rather than skipping a file that is already there:
+          # a silent skip is how a release goes out missing a platform.
+          skip-existing: false
+          print-hash: true

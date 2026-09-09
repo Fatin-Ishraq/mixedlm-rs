@@ -337,7 +337,7 @@ fixable in-tree.
 pip install maturin pytest numpy scipy pandas patsy statsmodels
 python -m maturin build --release --out dist
 pip install --force-reinstall --no-deps --no-index --find-links dist mixedlm-rs
-pytest tests/ -q      # 576 tests
+pytest tests/ -q      # 576 tests, with statsmodels + mypy + data/
 cargo test --lib      # 7 tests
 ```
 

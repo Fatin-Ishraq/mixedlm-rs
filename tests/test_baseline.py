@@ -387,17 +387,33 @@ def test_the_number_of_losses_matches(baseline):
 
 # -------------------------------------------------------------- suite counts
 def test_documented_test_counts_match_what_the_suite_collects():
-    """The documented figure is the *collected* count, checked against a live
-    collection rather than against the baseline.
+    """The documented figure is the *collected* count in a complete
+    environment, checked against a live collection.
 
-    Two reasons it is not read from bench/baseline.json. How many tests pass
-    depends on how many skip, and that depends on the environment -- so the
-    pass count is not quotable at all. And adding a test changes the collected
-    count without changing any fitted number, so it does not invalidate the
-    numerical baseline: comparing the documents to a stale baseline let both
-    sit at the same wrong number and still agree.
+    Not the pass count: how many pass depends on how many skip, and that
+    depends on what is installed.
+
+    Not read from bench/baseline.json either: adding a test changes the
+    collected count without changing any fitted number, so it does not
+    invalidate the numerical baseline, and the documents and a stale baseline
+    could sit at the same wrong number and still agree.
+
+    But *collected* is only environment-independent when the optional
+    dependencies are present. `tests/test_vs_statsmodels.py` and
+    `tests/test_fuzz.py` call `pytest.importorskip` at module scope, so
+    without statsmodels those files contribute zero collected tests rather
+    than skipped ones -- the declared-floors CI job collects 398 against 576.
+    So this runs only where the full toolchain is installed, and the documents
+    say which environment the number describes.
     """
+    import importlib.util
     import subprocess
+
+    for optional in ("statsmodels", "mypy"):
+        if importlib.util.find_spec(optional) is None:
+            pytest.skip(f"{optional} absent; collection is not comparable")
+    if not (ROOT / "data" / "sleepstudy.csv").is_file():
+        pytest.skip("lme4 fixtures absent; collection is not comparable")
 
     run = subprocess.run(
         [sys.executable, "-m", "pytest", "tests/", "--collect-only", "-q",
