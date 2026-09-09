@@ -30,10 +30,9 @@ from scipy.optimize import minimize
 warnings.filterwarnings("ignore")
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "proto"))
 
-import preml  # noqa: E402
-import statsmodels.formula.api as smf  # noqa: E402
-
-from mixedlm_rs import LmmCore  # noqa: E402
+import preml
+import statsmodels.formula.api as smf
+from mixedlm_rs import LmmCore
 
 CASES = [(500, 20), (1000, 20), (2000, 10), (5000, 8), (20000, 5)]
 
@@ -47,7 +46,7 @@ def make(ngroups, nper, seed=0):
     y = (1 + 2 * x1 - 0.5 * x2
          + np.repeat(rng.standard_normal(ngroups), nper)
          + rng.standard_normal(n) * 0.5)
-    df = pd.DataFrame(dict(y=y, x1=x1, x2=x2, g=codes))
+    df = pd.DataFrame({"y": y, "x1": x1, "x2": x2, "g": codes})
     X = np.ascontiguousarray(np.column_stack([np.ones(n), x1, x2]))
     Z = np.ascontiguousarray(np.column_stack([np.ones(n), x1]))
     return df, y, X, Z, codes, ngroups

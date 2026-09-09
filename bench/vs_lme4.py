@@ -54,7 +54,7 @@ def make(ngroups, nper, seed=0):
          + rng.standard_normal(ngroups)[codes]
          + rng.standard_normal(ngroups)[codes] * 0.6 * x1
          + rng.standard_normal(n) * 0.5)
-    return pd.DataFrame(dict(y=y, x1=x1, x2=x2, g=codes))
+    return pd.DataFrame({"y": y, "x1": x1, "x2": x2, "g": codes})
 
 
 def time_best(fn, reps=3):
@@ -76,18 +76,18 @@ def write_and_time_ours():
         df = make(ng, nper)
         fname = f"{name}.csv"
         df.to_csv(FIXTURES / fname, index=False)
-        manifest.append(dict(name=name, file=fname, re=re_kind,
-                             reml=str(reml).upper(), n=len(df), groups=ng))
+        manifest.append({"name": name, "file": fname, "re": re_kind,
+                             "reml": str(reml).upper(), "n": len(df), "groups": ng})
 
         rf = "~x1" if re_kind == "slope" else None
         dt, r = time_best(lambda d=df, rf=rf, reml=reml:
                           mlm.mixedlm("y ~ x1 + x2", d, groups=d["g"],
                                       re_formula=rf).fit(reml=reml))
-        results.append(dict(name=name, n=len(df), groups=ng, seconds=dt,
-                            logLik=float(r.llf),
-                            beta=[float(v) for v in r.fe_params],
-                            sigma=float(np.sqrt(r.scale)),
-                            converged=bool(r.converged)))
+        results.append({"name": name, "n": len(df), "groups": ng, "seconds": dt,
+                            "logLik": float(r.llf),
+                            "beta": [float(v) for v in r.fe_params],
+                            "sigma": float(np.sqrt(r.scale)),
+                            "converged": bool(r.converged)})
         print(f"  {name:<22s} {dt:8.3f} s   (mixedlm-rs)")
 
     pd.DataFrame(manifest).to_csv(FIXTURES / "manifest.csv", index=False)
@@ -131,7 +131,7 @@ def time_pymer4():
         return {}
 
     out = {}
-    for name, ng, nper, re_kind, reml in CASES:
+    for name, _ng, _nper, re_kind, reml in CASES:
         df = pl.read_csv(FIXTURES / f"{name}.csv")
         form = ("y ~ x1 + x2 + (1 + x1|g)" if re_kind == "slope"
                 else "y ~ x1 + x2 + (1|g)")
@@ -162,7 +162,7 @@ def report():
            f"{'lme4 (R)':>10s} | {'pymer4':>9s} | {'vs lme4':>8s} | {'dlogLik':>10s}")
     print(hdr)
     print("-" * len(hdr))
-    for name, ng, nper, re_kind, reml in CASES:
+    for name, _ng, _nper, _re_kind, _reml in CASES:
         o = ours.get(name)
         if o is None:
             continue

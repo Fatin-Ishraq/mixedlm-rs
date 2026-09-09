@@ -48,17 +48,20 @@ def install(strict=True):
         import statsmodels.api as sm
         import statsmodels.formula.api as smf
         import statsmodels.regression.mixed_linear_model as smm
-    except ImportError:
+    except ImportError as exc:
         if strict:
             raise ImportError(
                 "install() aliases statsmodels' mixed-model entry points, so "
                 "statsmodels must be importable. Pass strict=False to make this "
                 "a no-op."
-            )
+            ) from exc
         return False
 
     from .mixed_linear_model import (
-        MixedLM, MixedLMParams, MixedLMResults, mixedlm,
+        MixedLM,
+        MixedLMParams,
+        MixedLMResults,
+        mixedlm,
     )
 
     targets = [

@@ -24,7 +24,7 @@ from scipy.optimize import minimize
 
 from ._mixedlm_rs import LmmCore
 
-__all__ = ["fit_core", "ConvergenceWarning"]
+__all__ = ["ConvergenceWarning", "fit_core"]
 
 
 class ConvergenceWarning(UserWarning):
@@ -191,27 +191,23 @@ def fit_core(y, X, Z, codes, n_groups, reml=True, start_params=None,
     """
     Z = np.ascontiguousarray(Z, dtype=np.float64)
 
-    # lme4 refuses a model with at least as many random effects as observations,
-    # on the grounds that the variance parameters and the residual variance are
-    # then unidentifiable. It is exactly right: with q random effects per group
-    # and q observations in each, every group is fitted perfectly, the residual
-    # variance is driven towards zero and the profiled likelihood diverges rather
-    # than attaining a maximum. Two implementations will simply stop at different
-    # points along that path and neither answer means anything.
+    # ---- Identifiability of the variance split.
     #
-    # statsmodels fits these silently, so refusing outright would break the
-    # drop-in contract; we warn instead, which is the part that actually protects
-    # the user.
+    # The earlier version of this check asserted that `n <= q * m` means every
+    # group is interpolated, the residual variance is driven to zero and the
+    # profiled likelihood *diverges*. That is not true, and the counterexample
+    # is the simplest possible case: one random intercept per singleton
+    # observation gives V = (tau^2 + sigma^2) I, so the criterion is finite and
+    # exactly *constant* along the ridge that trades tau^2 against sigma^2 --
+    # flat, not divergent. Conversely the count rule misses real
+    # non-identifiability, such as a single group whose random intercept is
+    # perfectly confounded with the fixed intercept.
+    #
+    # So the structural count is used only to decide *where to look*, and the
+    # claim itself is settled empirically below, by asking the criterion.
     n_obs, q_re = Z.shape
-    if n_obs <= q_re * int(n_groups):
-        warnings.warn(
-            f"the random-effects structure is not identifiable: {n_obs} "
-            f"observations against {q_re * int(n_groups)} random effects "
-            f"({q_re} per group x {int(n_groups)} groups). The residual variance "
-            "and the variance components cannot be separated, and the reported "
-            "estimates are arbitrary points on a divergent likelihood. Use fewer "
-            "random-effect terms, or more observations per group.",
-            ConvergenceWarning, stacklevel=3)
+    n_groups = int(n_groups)
+    suspect = (n_obs <= q_re * n_groups) or (n_groups == 1)
 
     dscale = _column_scales(Z)
     # When the columns are already on comparable scales -- which includes the
@@ -241,7 +237,7 @@ def fit_core(y, X, Z, codes, n_groups, reml=True, start_params=None,
     class _Res:
         """The bit of a scipy OptimizeResult the driver below actually uses."""
 
-        __slots__ = ("x", "fun", "success", "message", "nit")
+        __slots__ = ("fun", "message", "nit", "success", "x")
 
         def __init__(self, x, fun, success, message, nit):
             self.x, self.fun = np.asarray(x, float), float(fun)
@@ -385,6 +381,34 @@ def fit_core(y, X, Z, codes, n_groups, reml=True, start_params=None,
                 best, sol, grad_norm, stationary = res, s_new, gn_new, ok_new
             if stationary:
                 break
+
+    if suspect:
+        # Is the criterion actually flat along theta here? A ridge on which the
+        # deviance does not change is a variance split the data cannot resolve:
+        # every point on it fits identically, so the reported split is one
+        # arbitrary point and means nothing. Two probes, only on designs the
+        # structural check already flagged.
+        d0 = float(core.deviance(list(best.x), reml))
+        flat = True
+        for factor in (4.0, 0.25):
+            probe = np.array(best.x, float)
+            probe[diag_k] = np.maximum(probe[diag_k] * factor, 1e-3)
+            dp = float(core.deviance(list(probe), reml))
+            if not np.isfinite(dp) or abs(dp - d0) > 1e-9 * max(1.0, abs(d0)):
+                flat = False
+                break
+        if flat:
+            warnings.warn(
+                f"the variance split is not identifiable: {n_obs} observations "
+                f"against {q_re * n_groups} random effects ({q_re} per group x "
+                f"{n_groups} groups). The profiled criterion is flat in the "
+                "random-effects variance -- every split between it and the "
+                "residual variance fits the data equally well -- so the "
+                "reported split is one arbitrary point on that ridge. The "
+                "fixed effects and the total variance are still estimated; the "
+                "decomposition is not. Use fewer random-effect terms, or more "
+                "observations per group.",
+                ConvergenceWarning, stacklevel=3)
 
     theta = np.asarray(best.x, float)
     converged = bool(stationary)

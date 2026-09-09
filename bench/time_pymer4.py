@@ -29,8 +29,8 @@ if os.path.isdir(RBIN):
     except (AttributeError, OSError):
         pass
 
-import polars as pl                                    # noqa: E402
-from pymer4.models import lmer                         # noqa: E402
+import polars as pl
+from pymer4.models import lmer
 
 CASES = [
     ("sleepstudy-like",   18,   10, "slope",     True),
@@ -52,7 +52,7 @@ def main():
     with open(OUT, "w", encoding="utf-8") as fh:
         fh.write("name,seconds,logLik,note\n")
         fh.flush()
-        for name, ng, nper, re_kind, reml in CASES:
+        for name, _ng, _nper, re_kind, reml in CASES:
             if only and name not in only:
                 continue
             path = FIXTURES / f"{name}.csv"

@@ -21,8 +21,11 @@ import pandas as pd
 from ._fit import ConvergenceWarning, fit_core
 
 __all__ = [
-    "MixedLM", "MixedLMResults", "MixedLMParams", "VCSpec",
     "ConvergenceWarning",
+    "MixedLM",
+    "MixedLMParams",
+    "MixedLMResults",
+    "VCSpec",
 ]
 
 
@@ -1084,7 +1087,7 @@ class MixedLMResults:
             ("Converged:", "Yes" if self.converged else "No"),
             ("Singular fit:", "Yes" if self.singular else "No"),
         ]
-        for (la, lv), (ra, rv) in zip(left, right):
+        for (la, lv), (ra, rv) in zip(left, right, strict=False):
             lines.append(f"{la:<22s}{lv:<18s}{ra:<22s}{rv:>16s}")
         lines.append("-" * 78)
         lines.append(f"{'':<20s}{'Coef.':>10s}{'Std.Err.':>10s}{'z':>9s}"
@@ -1232,7 +1235,7 @@ class _SummaryText:
 def mixedlm(formula, data, groups, re_formula=None, vc_formula=None,
             subset=None, use_sparse=False, missing="none", *args, **kwargs):
     """Formula interface, matching ``statsmodels.formula.api.mixedlm``."""
-    return MixedLM.from_formula(formula, data, re_formula=re_formula,
+    return MixedLM.from_formula(formula, data, *args, re_formula=re_formula,
                                 vc_formula=vc_formula, subset=subset,
                                 use_sparse=use_sparse, missing=missing,
-                                groups=groups, *args, **kwargs)
+                                groups=groups, **kwargs)

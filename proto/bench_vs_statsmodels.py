@@ -10,11 +10,10 @@ import warnings
 
 import numpy as np
 import pandas as pd
-
 from preml import fit_lmm
 
 warnings.filterwarnings("ignore")
-import statsmodels.formula.api as smf  # noqa: E402
+import statsmodels.formula.api as smf
 
 
 def make(ngroups, nper, seed=0):
@@ -26,7 +25,7 @@ def make(ngroups, nper, seed=0):
     y = (1 + 2 * x1 - 0.5 * x2
          + np.repeat(rng.standard_normal(ngroups), nper)
          + rng.standard_normal(n) * 0.5)
-    df = pd.DataFrame(dict(y=y, x1=x1, x2=x2, g=g))
+    df = pd.DataFrame({"y": y, "x1": x1, "x2": x2, "g": g})
     X = np.column_stack([np.ones(n), x1, x2])
     Z = np.column_stack([np.ones(n), x1])          # re_formula="~x1"
     return df, y, X, Z, g
@@ -67,8 +66,8 @@ if __name__ == "__main__":
     print("-" * 92)
     for r in rows:
         print(f"{r['n']:8,d} {r['groups']:7,d} | {r['t_sm']:11.2f}s "
-              f"{str(r['conv_sm']):>6s} | {r['t_ours']:12.3f}s "
-              f"{str(r['conv_ours']):>6s} | {r['speedup']:7.1f}x | {r['beta_maxdiff']:13.2e}")
+              f"{r['conv_sm']!s:>6s} | {r['t_ours']:12.3f}s "
+              f"{r['conv_ours']!s:>6s} | {r['speedup']:7.1f}x | {r['beta_maxdiff']:13.2e}")
     print("-" * 92)
 
     conv_fixed = [r for r in rows if not r["conv_sm"] and r["conv_ours"]]

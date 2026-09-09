@@ -14,11 +14,10 @@ hidden behind a loose tolerance.
 
 import warnings
 
+import mixedlm_rs as mlm
 import numpy as np
 import pandas as pd
 import pytest
-
-import mixedlm_rs as mlm
 
 warnings.filterwarnings("ignore")
 smf = pytest.importorskip("statsmodels.formula.api")
@@ -39,7 +38,7 @@ def make(ngroups, nper, seed, q=2, re_sd=1.0, resid_sd=0.5, unbalanced=False):
     if q == 2:
         b1 = rng.standard_normal(ngroups) * re_sd * 0.6
         y = y + b1[codes] * x1
-    return pd.DataFrame(dict(y=y, x1=x1, x2=x2, g=codes))
+    return pd.DataFrame({"y": y, "x1": x1, "x2": x2, "g": codes})
 
 
 def fit_both(df, re_formula="~x1", reml=True):

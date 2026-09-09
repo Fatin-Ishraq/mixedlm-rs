@@ -15,7 +15,6 @@ Published in Bates et al. (2015) JSS 67(1) and reproducible in any R install:
 
 import numpy as np
 import pandas as pd
-
 from preml import fit_lmm
 
 LME4 = {

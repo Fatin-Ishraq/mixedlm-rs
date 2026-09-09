@@ -7,8 +7,9 @@ lme4 speed, statsmodels API, no R required.
     + from mixedlm_rs import MixedLM
 """
 
-from ._mixedlm_rs import LmmCore
 from ._fit import ConvergenceWarning
+from ._install import install, is_installed, uninstall
+from ._mixedlm_rs import LmmCore
 from .mixed_linear_model import (
     MixedLM,
     MixedLMParams,
@@ -16,13 +17,21 @@ from .mixed_linear_model import (
     VCSpec,
     mixedlm,
 )
-from ._install import install, uninstall, is_installed
 
 __version__ = "0.1.0"
 __statsmodels_version__ = "0.15.0"
 
 __all__ = [
-    "MixedLM", "MixedLMResults", "MixedLMParams", "VCSpec", "mixedlm",
-    "LmmCore", "ConvergenceWarning", "install", "uninstall", "is_installed",
-    "__version__", "__statsmodels_version__",
+    "ConvergenceWarning",
+    "LmmCore",
+    "MixedLM",
+    "MixedLMParams",
+    "MixedLMResults",
+    "VCSpec",
+    "__statsmodels_version__",
+    "__version__",
+    "install",
+    "is_installed",
+    "mixedlm",
+    "uninstall",
 ]

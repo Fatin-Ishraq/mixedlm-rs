@@ -17,8 +17,8 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-import mixedlm_rs as mlm  # noqa: E402
-import statsmodels.formula.api as smf  # noqa: E402
+import mixedlm_rs as mlm
+import statsmodels.formula.api as smf
 
 CASES = [
     #  groups,  per group,  run statsmodels?
@@ -42,7 +42,7 @@ def make(ngroups, nper, seed=0, q=2):
     b1 = rng.standard_normal(ngroups) * 0.6
     y = (1 + 2 * x1 - 0.5 * x2 + b0[codes] + b1[codes] * x1
          + rng.standard_normal(n) * 0.5)
-    return pd.DataFrame(dict(y=y, x1=x1, x2=x2, g=codes))
+    return pd.DataFrame({"y": y, "x1": x1, "x2": x2, "g": codes})
 
 
 def run(ngroups, nper, do_sm):
@@ -64,8 +64,8 @@ def run(ngroups, nper, do_sm):
         se = np.asarray(ours.bse_fe, float)
         agree = float(np.max(np.abs(ours.fe_params - np.asarray(theirs.fe_params)) / se))
 
-    return dict(n=n, groups=ngroups, t_ours=t_ours, conv_ours=ours.converged,
-                t_sm=t_sm, conv_sm=conv_sm, agree=agree)
+    return {"n": n, "groups": ngroups, "t_ours": t_ours, "conv_ours": ours.converged,
+                "t_sm": t_sm, "conv_sm": conv_sm, "agree": agree}
 
 
 def main():

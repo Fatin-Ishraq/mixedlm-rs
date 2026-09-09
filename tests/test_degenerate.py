@@ -7,11 +7,10 @@ hypothetical.
 
 import warnings
 
+import mixedlm_rs as mlm
 import numpy as np
 import pandas as pd
 import pytest
-
-import mixedlm_rs as mlm
 from mixedlm_rs import ConvergenceWarning
 
 
@@ -25,7 +24,7 @@ def _tiny_variance_data(seed, re_sd):
     x1 = rng.standard_normal(n)
     b0 = rng.standard_normal(ngroups) * re_sd
     y = 1.0 + 2.0 * x1 + b0[codes] + rng.standard_normal(n) * 1.0
-    return pd.DataFrame(dict(y=y, x1=x1, g=codes))
+    return pd.DataFrame({"y": y, "x1": x1, "g": codes})
 
 
 @pytest.mark.parametrize("re_sd", [0.3, 0.1, 0.05, 0.02, 0.01])
@@ -82,34 +81,98 @@ def test_beats_or_matches_statsmodels_on_small_variance():
 
 
 # ------------------------------------------------------------ identifiability
-def _saturated(q):
-    """n == q * m exactly: every group perfectly fitted by its own random effects."""
+#
+# The counting rule `n <= q * m` was once treated as proof that a model is
+# unidentifiable, on the reasoning that every group is interpolated and the
+# likelihood diverges. Both halves are false, and these tests pin the two
+# counterexamples:
+#
+#   * q = 1 with one observation per group really is unidentifiable, but the
+#     criterion is *flat* along the variance split, not divergent -- V is
+#     (tau^2 + sigma^2) I, so only the total is determined.
+#   * q = 2 with two observations per group satisfies the same count rule and
+#     is perfectly well identified: it has an interior optimum with a positive
+#     residual variance, and the old rule warned about it for no reason.
+#
+# So the warning is now driven by asking the criterion whether it is flat,
+# not by counting.
+def _singleton_groups():
+    """One observation per group: the variance split is genuinely unidentified."""
     rng = np.random.default_rng(0)
-    ngroups, nper = 60, q
+    n = 60
+    codes = np.arange(n)
+    x1 = rng.standard_normal(n)
+    y = 1.0 + 2.0 * x1 + rng.standard_normal(n) * 0.5
+    return pd.DataFrame({"y": y, "x1": x1, "g": codes})
+
+
+def _two_per_group_random_slope():
+    """n == q * m, but identified: the criterion has an interior optimum."""
+    rng = np.random.default_rng(0)
+    ngroups, nper = 60, 2
     codes = np.repeat(np.arange(ngroups), nper)
     n = len(codes)
     x1 = rng.standard_normal(n)
-    y = 1.0 + 2.0 * x1 + rng.standard_normal(ngroups)[codes] + rng.standard_normal(n) * 0.5
-    return pd.DataFrame(dict(y=y, x1=x1, g=codes))
+    y = (1.0 + 2.0 * x1 + rng.standard_normal(ngroups)[codes]
+         + rng.standard_normal(n) * 0.5)
+    return pd.DataFrame({"y": y, "x1": x1, "g": codes})
 
 
-@pytest.mark.parametrize("q,re_formula", [(1, None), (2, "~x1")])
-def test_unidentifiable_model_warns(q, re_formula):
-    """With as many random effects as observations, the residual variance and
-    the variance components cannot be separated: the profiled likelihood
-    diverges as sigma^2 -> 0 rather than attaining a maximum.
-
-    lme4 refuses these outright. statsmodels fits them silently, so refusing
-    would break the drop-in contract -- but the user must be told.
-    """
-    df = _saturated(q)
+def _warnings_from(df, re_formula):
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
-        mlm.mixedlm("y ~ x1", df, groups=df["g"], re_formula=re_formula).fit()
-    msgs = [str(x.message) for x in w
-            if issubclass(x.category, ConvergenceWarning)]
+        res = mlm.mixedlm("y ~ x1", df, groups=df["g"],
+                          re_formula=re_formula).fit()
+    return res, [str(x.message) for x in w
+                 if issubclass(x.category, ConvergenceWarning)]
+
+
+def test_flat_variance_split_warns():
+    """One observation per group: warn, and say the criterion is flat."""
+    _, msgs = _warnings_from(_singleton_groups(), None)
     assert any("not identifiable" in m for m in msgs), \
         f"expected an identifiability warning, got {msgs}"
+    assert any("flat" in m for m in msgs), \
+        "the warning must say the criterion is flat, not that it diverges"
+
+
+def test_flat_criterion_really_is_flat():
+    """The premise of the warning above, checked directly against the core."""
+    df = _singleton_groups()
+    model = mlm.mixedlm("y ~ x1", df, groups=df["g"])
+    core = model._core()
+    values = [core.deviance([t], True) for t in (0.0, 1.0, 10.0, 100.0)]
+    spread = (max(values) - min(values)) / max(1.0, abs(values[0]))
+    assert spread < 1e-9, f"expected a flat criterion, got {values}"
+
+
+def test_saturated_but_identified_model_does_not_warn():
+    """n == q * m and yet perfectly well identified -- the count rule is wrong.
+
+    This model has an interior optimum with a positive residual variance. The
+    old rule warned here purely because of the row count.
+    """
+    res, msgs = _warnings_from(_two_per_group_random_slope(), "~x1")
+    assert not any("not identifiable" in m for m in msgs), \
+        f"false identifiability warning on a well-identified model: {msgs}"
+    assert res.scale > 0
+    assert np.isfinite(res.llf)
+
+
+def test_single_group_is_caught_although_the_count_rule_misses_it():
+    """m == 1: the random intercept is confounded with the fixed intercept.
+
+    `n <= q * m` is false here (n is 60, q * m is 1), so counting never flags
+    it, but the variance split is exactly as unidentified as the flat case.
+    """
+    rng = np.random.default_rng(3)
+    n = 60
+    df = pd.DataFrame({"y": rng.standard_normal(n),
+                       "x1": rng.standard_normal(n),
+                       "g": np.zeros(n)})
+    _, msgs = _warnings_from(df, None)
+    assert any("not identifiable" in m for m in msgs), \
+        f"expected an identifiability warning for a single group, got {msgs}"
 
 
 def test_well_identified_model_does_not_warn():
@@ -120,7 +183,7 @@ def test_well_identified_model_does_not_warn():
     n = len(codes)
     x1 = rng.standard_normal(n)
     y = 1.0 + 2.0 * x1 + rng.standard_normal(ngroups)[codes] + rng.standard_normal(n) * 0.5
-    df = pd.DataFrame(dict(y=y, x1=x1, g=codes))
+    df = pd.DataFrame({"y": y, "x1": x1, "g": codes})
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
         mlm.mixedlm("y ~ x1", df, groups=df["g"], re_formula="~x1").fit()
@@ -136,7 +199,7 @@ def test_groups_of_size_one():
     n = len(codes)
     x1 = rng.standard_normal(n)
     y = 1.0 + 2.0 * x1 + rng.standard_normal(len(sizes))[codes] + rng.standard_normal(n) * 0.5
-    df = pd.DataFrame(dict(y=y, x1=x1, g=codes))
+    df = pd.DataFrame({"y": y, "x1": x1, "g": codes})
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         r = mlm.mixedlm("y ~ x1", df, groups=df["g"]).fit()
@@ -154,7 +217,7 @@ def test_near_collinear_fixed_effects():
     x2 = x1 * 0.999 + rng.standard_normal(n) * 1e-3
     y = 1.0 + 2.0 * x1 - 0.5 * x2 + rng.standard_normal(ngroups)[codes] \
         + rng.standard_normal(n) * 0.5
-    df = pd.DataFrame(dict(y=y, x1=x1, x2=x2, g=codes))
+    df = pd.DataFrame({"y": y, "x1": x1, "x2": x2, "g": codes})
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         r = mlm.mixedlm("y ~ x1 + x2", df, groups=df["g"]).fit()
@@ -172,7 +235,7 @@ def test_extreme_predictor_scaling():
         x1 = rng.standard_normal(n) * scale
         y = (1.0 + 2.0 * x1 + rng.standard_normal(ngroups)[codes]
              + rng.standard_normal(n) * 0.5)
-        df = pd.DataFrame(dict(y=y, x1=x1, g=codes))
+        df = pd.DataFrame({"y": y, "x1": x1, "g": codes})
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             r = mlm.mixedlm("y ~ x1", df, groups=df["g"], re_formula="~x1").fit()
@@ -189,7 +252,7 @@ def test_heavy_outliers_do_not_break_the_fit():
     x1 = rng.standard_normal(n)
     y = 1.0 + 2.0 * x1 + rng.standard_normal(ngroups)[codes] + rng.standard_normal(n) * 0.5
     y[rng.integers(0, n, n // 50)] += rng.standard_normal(n // 50) * 100
-    df = pd.DataFrame(dict(y=y, x1=x1, g=codes))
+    df = pd.DataFrame({"y": y, "x1": x1, "g": codes})
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         r = mlm.mixedlm("y ~ x1", df, groups=df["g"]).fit()

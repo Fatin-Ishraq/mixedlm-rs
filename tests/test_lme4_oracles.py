@@ -12,11 +12,10 @@ release's scope and are exercised in test_api.py as explicit refusals.
 
 import pathlib
 
+import mixedlm_rs as mlm
 import numpy as np
 import pandas as pd
 import pytest
-
-import mixedlm_rs as mlm
 
 DATA = pathlib.Path(__file__).resolve().parents[1] / "data"
 
@@ -147,7 +146,7 @@ def test_dyestuff2_residual_agrees_with_statsmodels_too():
 def test_reml_criterion_is_at_least_ml_deviance(name, formula, group, re_formula):
     """REML and ML must both be finite and ordered sanely for the same data."""
     d = load(name)
-    kw = dict(groups=d[group], re_formula=re_formula)
+    kw = {"groups": d[group], "re_formula": re_formula}
     a = mlm.mixedlm(formula, d, **kw).fit(reml=True)
     b = mlm.mixedlm(formula, d, **kw).fit(reml=False)
     assert np.isfinite(a.llf) and np.isfinite(b.llf)

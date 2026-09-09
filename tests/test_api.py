@@ -7,11 +7,10 @@ different model.
 
 import warnings
 
+import mixedlm_rs as mlm
 import numpy as np
 import pandas as pd
 import pytest
-
-import mixedlm_rs as mlm
 from mixedlm_rs import MixedLM, MixedLMParams, VCSpec
 
 warnings.filterwarnings("ignore")
@@ -23,7 +22,7 @@ def toy(ngroups=20, nper=8, seed=0, q=2):
     n = len(codes)
     x1 = rng.standard_normal(n)
     y = 1 + 2 * x1 + rng.standard_normal(ngroups)[codes] + rng.standard_normal(n) * 0.5
-    return pd.DataFrame(dict(y=y, x1=x1, g=codes))
+    return pd.DataFrame({"y": y, "x1": x1, "g": codes})
 
 
 # ------------------------------------------------------------------ surface
@@ -158,8 +157,8 @@ def test_single_group_is_handled():
     """Degenerate but legal: one group means the random effect is unidentified."""
     rng = np.random.default_rng(0)
     n = 20
-    df = pd.DataFrame(dict(y=rng.standard_normal(n), x1=rng.standard_normal(n),
-                           g=np.zeros(n, dtype=int)))
+    df = pd.DataFrame({"y": rng.standard_normal(n), "x1": rng.standard_normal(n),
+                           "g": np.zeros(n, dtype=int)})
     r = mlm.mixedlm("y ~ x1", df, groups=df["g"]).fit()
     assert np.isfinite(r.llf)
 

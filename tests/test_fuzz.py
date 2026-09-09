@@ -12,11 +12,10 @@ mixed-model fitter actually fails, and where statsmodels reports
 
 import warnings
 
+import mixedlm_rs as mlm
 import numpy as np
 import pandas as pd
 import pytest
-
-import mixedlm_rs as mlm
 
 warnings.filterwarnings("ignore")
 smf = pytest.importorskip("statsmodels.formula.api")
@@ -51,10 +50,70 @@ def random_case(rng):
         b1 = rng.standard_normal(ngroups) * re_sd * rng.uniform(0.0, 1.0)
         y = y + b1[codes] * x1
 
-    df = pd.DataFrame(dict(y=y, x1=x1, x2=x2, g=codes))
+    df = pd.DataFrame({"y": y, "x1": x1, "x2": x2, "g": codes})
     re_formula = "~x1" if q == 2 else None
     reml = bool(rng.random() < 0.5)
     return df, re_formula, reml
+
+
+def assert_local_optimum(res, reml, rng):
+    """Independently certify that `res` sits at a local optimum.
+
+    This deliberately uses *neither* `res.converged` nor the analytic gradient:
+    both are the package's own claims, and the branch this is used in -- where
+    statsmodels fails to converge and there is nothing to compare against -- is
+    exactly where a self-certifying assertion is worth nothing.
+
+    Two checks, both from the deviance alone:
+
+    1. The central finite-difference gradient, projected onto the feasible
+       directions, is small.
+    2. No perturbation in a spread of random directions improves the criterion.
+    """
+    # The core the fit actually used, not a freshly built one: `theta` lives in
+    # the internally rescaled random-effects coordinates and against an OLS-
+    # offset response, so it only means anything paired with that same core.
+    core = res._res["core"]
+    theta = np.asarray(res._res["theta"], float)
+    lower = np.asarray(core.lower_bounds(), float)
+    d0 = core.deviance(list(theta), reml)
+    assert np.isfinite(d0)
+
+    # 1. Finite-difference gradient, computed from the criterion only.
+    scale = max(1.0, float(np.max(np.abs(theta))))
+    h = 1e-5 * scale
+    grad = np.zeros_like(theta)
+    for k in range(theta.size):
+        up, dn = theta.copy(), theta.copy()
+        up[k] += h
+        dn[k] -= h
+        if np.isfinite(lower[k]):
+            dn[k] = max(dn[k], lower[k])
+        step = up[k] - dn[k]
+        f_up, f_dn = core.deviance(list(up), reml), core.deviance(list(dn), reml)
+        if not (np.isfinite(f_up) and np.isfinite(f_dn)) or step <= 0:
+            continue
+        grad[k] = (f_up - f_dn) / step
+        # A component pressed against its bound is stationary there.
+        if np.isfinite(lower[k]) and theta[k] <= lower[k] + 1e-10 and grad[k] > 0:
+            grad[k] = 0.0
+
+    dfree = res.nobs - (res.k_fe if reml else 0)
+    tol = 1e-3 * max(1.0, dfree)
+    assert np.max(np.abs(grad)) <= tol, (
+        f"not a stationary point: finite-difference projected gradient "
+        f"{np.max(np.abs(grad)):.4g} exceeds {tol:.4g}")
+
+    # 2. No nearby point is better.
+    for mag in (1e-3, 1e-2, 1e-1):
+        for _ in range(4):
+            cand = theta + rng.normal(scale=mag * scale, size=theta.size)
+            cand = np.maximum(cand, lower)
+            d = core.deviance(list(cand), reml)
+            if np.isfinite(d):
+                assert d >= d0 - 1e-6 * max(1.0, abs(d0)), (
+                    f"a perturbation improved the criterion by {d0 - d:.4g}; "
+                    "the reported optimum is not local")
 
 
 @pytest.mark.parametrize("seed", range(N_CASES))
@@ -78,9 +137,17 @@ def test_fuzz_against_statsmodels(seed):
     theirs = smf.mixedlm("y ~ x1 + x2", df, groups=df["g"],
                          re_formula=re_formula).fit(reml=reml)
     if not theirs.converged:
-        assert ours.converged, (
-            "statsmodels failed to converge and so did we; this is the case "
-            "the package exists to fix")
+        # This is the branch the package exists for, and the one where a
+        # self-certifying assertion would be worthless. Two independent checks:
+        assert_local_optimum(ours, reml, rng)
+        # statsmodels stopped somewhere; wherever that is, it is a point in the
+        # parameter space, so its criterion is a lower bound we must not fall
+        # below even though it did not converge.
+        if np.isfinite(theirs.llf):
+            tol = 1e-6 * max(abs(theirs.llf), 1.0)
+            assert ours.llf >= theirs.llf - tol, (
+                f"statsmodels did not converge, yet its criterion {theirs.llf} "
+                f"beats ours {ours.llf}")
         return
 
     # Both converged. The likelihood is the primary comparison: two optimisers
@@ -120,7 +187,12 @@ def test_fuzz_summary_never_raises():
                         re_formula=re_formula).fit(reml=reml)
         txt = str(r.summary())
         assert "Mixed Linear Model" in txt
-        assert "nan" not in txt.lower().split("Converged")[0][:200] or True
+        # The coefficient block must carry real numbers. This once read
+        # `assert ... or True`, which cannot fail and tested nothing.
+        body = txt.split("-" * 78)[2]
+        assert "nan" not in body.lower(), f"nan in the coefficient table:\n{body}"
+        for name in r.model.exog_names:
+            assert name[:20] in txt, f"{name} missing from the summary"
 
 
 def test_fuzz_reml_and_ml_agree_on_fixed_effects():

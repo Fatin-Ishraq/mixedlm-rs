@@ -23,11 +23,16 @@ classifiers = [
     "Programming Language :: Rust",
     "Topic :: Scientific/Engineering :: Mathematics",
 ]
-dependencies = ["numpy>=1.23", "scipy>=1.9", "pandas>=1.5"]
+# patsy is required, not optional: the documented first example -- and the
+# `mixedlm(...)` entry point that mirrors statsmodels' formula API -- needs it,
+# so a clean install of the base package has to be able to run it.
+dependencies = ["numpy>=1.23", "scipy>=1.9", "pandas>=1.5", "patsy>=0.5"]
 
 [project.optional-dependencies]
-formula = ["patsy>=0.5"]
-test = ["pytest>=7", "statsmodels>=0.14", "patsy>=0.5"]
+# Kept as an empty extra so `pip install mixedlm-rs[formula]` keeps working for
+# anyone who already wrote it; patsy is now in the base dependencies.
+formula = []
+test = ["pytest>=7", "statsmodels>=0.14"]
 
 [tool.maturin]
 python-source = "python"
@@ -37,3 +42,28 @@ features = ["pyo3/extension-module"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::UserWarning"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+extend-exclude = ["dist", "target", ".review"]
+
+[tool.ruff.lint]
+# Pinned explicitly: relying on the default rule set means "ruff clean" changes
+# meaning with the ruff version, which is not a check anyone can rely on.
+select = ["E", "W", "F", "I", "B", "C4", "UP", "RUF"]
+ignore = [
+    "E501",    # long lines are caught by the formatter, not worth failing on
+    "RUF002",  # ambiguous unicode in docstrings (we write proper minus signs)
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Benchmarks and the prototype import after adjusting sys.path or after a
+# guarded availability check, which is the point of them.
+"bench/*" = ["E402"]
+# The prototype is written to read like the equations it implements:
+# short names (l for a Cholesky factor) and paired assignments on one
+# line. That is the point of it as a reference, so those rules are off.
+"proto/*" = ["E402", "E741", "E702", "RUF034"]
+"tests/*" = ["E402"]

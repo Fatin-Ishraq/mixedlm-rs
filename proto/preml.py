@@ -22,8 +22,13 @@ from __future__ import annotations
 import numpy as np
 from scipy.optimize import minimize
 
-__all__ = ["LMMData", "profiled_deviance", "fit_lmm",
-           "profiled_deviance_looped", "fit_lmm_looped"]
+__all__ = [
+    "LMMData",
+    "fit_lmm",
+    "fit_lmm_looped",
+    "profiled_deviance",
+    "profiled_deviance_looped",
+]
 
 _LOG2PI = np.log(2.0 * np.pi)
 
@@ -35,8 +40,20 @@ class LMMData:
     class of quantity inside the optimiser loop; we form it exactly once.
     """
 
-    __slots__ = ("n", "p", "q", "m", "XtX", "Xty", "yty", "ZtZ", "ZtX", "Zty",
-                 "group_index", "group_sizes")
+    __slots__ = (
+        "XtX",
+        "Xty",
+        "ZtX",
+        "ZtZ",
+        "Zty",
+        "group_index",
+        "group_sizes",
+        "m",
+        "n",
+        "p",
+        "q",
+        "yty",
+    )
 
     def __init__(self, y, X, Z, groups):
         y = np.ascontiguousarray(y, dtype=np.float64).ravel()
