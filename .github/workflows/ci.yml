@@ -122,6 +122,11 @@ jobs:
           python -m maturin build --release --out dist
           python -m pip install --find-links dist --no-index --no-deps mixedlm-rs
           python -m pip install numpy scipy pandas patsy pytest
+      # Every finding from the two external reviews, re-checked against the
+      # built artifact. Documentation claims are read from the files, and the
+      # native-safety cases run in child processes.
+      - name: Review findings stay fixed
+        run: python scripts/verify_review_findings.py
       # The crate is built with panic="abort", so a missing bounds check is a
       # process kill rather than a catchable error. Each case runs in its own
       # child process, and a non-zero exit code is the failure signal -- an

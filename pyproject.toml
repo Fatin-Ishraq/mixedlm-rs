@@ -117,3 +117,5 @@ ignore = [
 # line. That is the point of it as a reference, so those rules are off.
 "proto/*" = ["E402", "E741", "E702", "RUF034"]
 "tests/*" = ["E402"]
+# The review-findings checker quotes documentation verbatim, en dashes and all.
+"scripts/verify_review_findings.py" = ["RUF001"]
