@@ -34,9 +34,16 @@ LICENSE_FILE = re.compile(r"^(LICENSE|LICENCE|COPYRIGHT|NOTICE)([-_.].*)?$",
 
 def linked_crates() -> list[tuple[str, str, str]]:
     """(name, version, spdx) for every crate in the normal dependency graph."""
+    # --target all, not the host target. Without it `cargo tree` resolves the
+    # platform-specific dependencies of whichever machine is running, so the
+    # generated file differs between Linux, macOS and Windows and --check
+    # reports "stale" on every host except the one that wrote it. The union is
+    # also the honest set for a file committed once and shipped in wheels for
+    # all three: over-inclusive costs a few paragraphs, under-inclusive is the
+    # licence violation this script exists to prevent.
     out = subprocess.run(
         ["cargo", "tree", "--format", "{p}|{l}", "-e", "normal",
-         "--prefix", "none"],
+         "--prefix", "none", "--target", "all"],
         cwd=ROOT, capture_output=True, text=True, check=True).stdout
     seen: dict[tuple[str, str], str] = {}
     for line in out.splitlines():
@@ -90,6 +97,11 @@ def render() -> str:
         "the local cargo registry -- these are upstream's own files, not a",
         "transcription. `THIRD-PARTY-NOTICES.md` summarises the same set and",
         "records what is *not* linked in.",
+        "",
+        "The crate set is the union across all targets (`cargo tree --target",
+        "all`), so this file is the same on Linux, macOS and Windows and one",
+        "committed copy covers every wheel. A crate that only links on one",
+        "platform still appears here.",
         "",
         "Build-time-only crates (procedural macros, which run on the build",
         "machine and are not linked into the artifact) are omitted: "

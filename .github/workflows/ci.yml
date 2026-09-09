@@ -34,6 +34,14 @@ jobs:
       - run: python -m mypy tests/typing_usage.py --strict --ignore-missing-imports
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo fmt --check
+      # `cargo fetch` with no --target vendors the sources for *every* target,
+      # which is what the notices generator reads. A plain `cargo build` only
+      # fetches the host's, so elsewhere the check can only skip -- this is the
+      # one job where it actually runs.
+      - name: Vendor every target's crate sources
+        run: cargo fetch
+      - name: Upstream licence texts are current
+        run: python scripts/collect_notices.py --check
 
   test:
     name: test ${{ matrix.os }} / py${{ matrix.python }}
