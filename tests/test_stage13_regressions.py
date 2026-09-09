@@ -12,6 +12,7 @@ the test says *why* the value is right.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import pathlib
 import pickle
@@ -416,6 +417,34 @@ class TestRedistributionNotices:
     def test_every_linked_crate_has_its_text(self, crate):
         text = (ROOT / "THIRD-PARTY-LICENSES.md").read_text("utf-8")
         assert f"## {crate} " in text
+
+    def test_the_crate_parser_tolerates_colourised_output(self):
+        """cargo colourises when it thinks it has a terminal -- CI does.
+
+        The escape codes wrap the "(*)" de-duplication marker, so removing
+        that marker by suffix quietly failed on the runner and left raw ANSI
+        sequences in the SPDX column of a *committed* licence file. Nothing
+        noticed until a regeneration check compared the two.
+        """
+        spec = importlib.util.spec_from_file_location(
+            "collect_notices", ROOT / "scripts" / "collect_notices.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        E = "\x1b"
+        coloured = f"num-complex v0.4.6|MIT OR Apache-2.0 {E}[33m{E}[2m(*){E}[39m{E}[22m"
+        assert mod.parse_tree_line(coloured) == (
+            "num-complex", "0.4.6", "MIT OR Apache-2.0")
+        assert mod.parse_tree_line("num-complex v0.4.6|MIT OR Apache-2.0 (*)") == (
+            "num-complex", "0.4.6", "MIT OR Apache-2.0")
+        assert mod.parse_tree_line("pyo3-macros v0.29.2 (proc-macro)|MIT") is None
+        assert mod.parse_tree_line("") is None
+
+    def test_the_committed_notices_carry_no_escape_codes(self):
+        """The symptom, checked directly on the file that ships."""
+        raw = (ROOT / "THIRD-PARTY-LICENSES.md").read_bytes()
+        assert b"[" not in raw, (
+            "THIRD-PARTY-LICENSES.md contains ANSI escape sequences")
 
     @pytest.mark.skipif(
         os.environ.get("MIXEDLM_CHECK_NOTICES") != "1",

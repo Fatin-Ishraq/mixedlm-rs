@@ -28,6 +28,8 @@ OUT = ROOT / "THIRD-PARTY-LICENSES.md"
 PROC_MACRO_ONLY = {"pyo3-macros", "pyo3-macros-backend", "proc-macro2",
                    "quote", "syn", "unicode-ident", "heck", "rustc-hash"}
 
+_ANSI = re.compile("\x1b\\[[0-9;]*m")
+
 LICENSE_FILE = re.compile(r"^(LICENSE|LICENCE|COPYRIGHT|NOTICE)([-_.].*)?$",
                           re.IGNORECASE)
 
@@ -41,25 +43,45 @@ def linked_crates() -> list[tuple[str, str, str]]:
     # also the honest set for a file committed once and shipped in wheels for
     # all three: over-inclusive costs a few paragraphs, under-inclusive is the
     # licence violation this script exists to prevent.
+    # --color never: cargo colourises when it believes it is attached to a
+    # terminal, which it does on a CI runner but not in a local pipe. The
+    # escape codes wrap the "(*)" de-duplication marker, so stripping that
+    # marker by suffix silently failed there and left ANSI sequences in the
+    # SPDX column of a committed file. Belt and braces: the codes are also
+    # removed below, so the output does not depend on cargo honouring this.
     out = subprocess.run(
         ["cargo", "tree", "--format", "{p}|{l}", "-e", "normal",
-         "--prefix", "none", "--target", "all"],
+         "--prefix", "none", "--target", "all", "--color", "never"],
         cwd=ROOT, capture_output=True, text=True, check=True).stdout
     seen: dict[tuple[str, str], str] = {}
     for line in out.splitlines():
-        line = line.strip().removesuffix(" (*)")
-        if "|" not in line:
+        parsed = parse_tree_line(line)
+        if parsed is None:
             continue
-        pkg, spdx = line.rsplit("|", 1)
-        pkg = pkg.replace(" (proc-macro)", "").strip()
-        parts = pkg.split()
-        if len(parts) < 2 or not parts[1].startswith("v"):
-            continue
-        name, version = parts[0], parts[1][1:]
-        if name == "mixedlm-rs" or name in PROC_MACRO_ONLY:
-            continue
-        seen[(name, version)] = spdx.strip()
+        name, version, spdx = parsed
+        seen[(name, version)] = spdx
     return sorted((n, v, s) for (n, v), s in seen.items())
+
+
+def parse_tree_line(line: str) -> tuple[str, str, str] | None:
+    """One `cargo tree --format "{p}|{l}"` line as (name, version, spdx).
+
+    None for a line that is not a package. Separate from the subprocess call
+    so the parsing can be tested against colourised input without a cargo run
+    -- which is how the escape codes reached a committed file unnoticed.
+    """
+    line = _ANSI.sub("", line).strip().removesuffix(" (*)").strip()
+    if "|" not in line:
+        return None
+    pkg, spdx = line.rsplit("|", 1)
+    pkg = pkg.replace(" (proc-macro)", "").strip()
+    parts = pkg.split()
+    if len(parts) < 2 or not parts[1].startswith("v"):
+        return None
+    name, version = parts[0], parts[1][1:]
+    if name == "mixedlm-rs" or name in PROC_MACRO_ONLY:
+        return None
+    return name, version, spdx.strip()
 
 
 def registry_roots() -> list[pathlib.Path]:

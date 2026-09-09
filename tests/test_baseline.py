@@ -20,6 +20,7 @@ import json
 import os
 import pathlib
 import re
+import sys
 
 import pytest
 
@@ -385,33 +386,37 @@ def test_the_number_of_losses_matches(baseline):
 
 
 # -------------------------------------------------------------- suite counts
-def test_documented_test_counts_match_the_recorded_run(baseline):
-    """The documented figure is the *collected* count, not the pass count.
+def test_documented_test_counts_match_what_the_suite_collects():
+    """The documented figure is the *collected* count, checked against a live
+    collection rather than against the baseline.
 
-    How many tests pass depends on how many skip, and that depends on the
-    environment: statsmodels present or not, the lme4 fixtures present or not,
-    mypy installed or not. Two runs of the same commit here gave 518 passed /
-    1 skipped and 516 passed / 3 skipped -- 519 collected either way. Quoting
-    the pass count would make the documentation drift for reasons that have
-    nothing to do with the code.
+    Two reasons it is not read from bench/baseline.json. How many tests pass
+    depends on how many skip, and that depends on the environment -- so the
+    pass count is not quotable at all. And adding a test changes the collected
+    count without changing any fitted number, so it does not invalidate the
+    numerical baseline: comparing the documents to a stale baseline let both
+    sit at the same wrong number and still agree.
     """
-    if "suites" not in baseline:
-        pytest.skip("baseline recorded with --skip-suites")
-    collected = baseline["suites"]["pytest"].get("collected")
-    if collected is None:
-        pytest.skip("baseline predates the collected-count record")
+    import subprocess
+
+    run = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/", "--collect-only", "-q",
+         "--no-header", "-p", "no:cacheprovider"],
+        cwd=ROOT, capture_output=True, text=True)
+    match = re.search(r"(\d+)\s+tests? collected", run.stdout)
+    if not match:
+        pytest.skip(f"could not collect: {run.stdout[-200:]}")
+    collected = int(match.group(1))
 
     for name, path in DOCS.items():
         text = path.read_text(encoding="utf-8")
         for quoted in re.findall(r"\*\*(\d+) Python tests", text):
             assert int(quoted) == collected, (
-                f"{name} says {quoted} Python tests; the recorded run "
-                f"collected {collected}")
+                f"{name} says {quoted} Python tests; the suite collects "
+                f"{collected}")
         for quoted in re.findall(r"pytest tests/ -q\s+# (\d+) tests", text):
             assert int(quoted) == collected, (
-                f"{name} says {quoted} tests; the recorded run collected "
-                f"{collected}")
-
+                f"{name} says {quoted} tests; the suite collects {collected}")
 
 def test_the_recorded_run_had_no_failures(baseline):
     if "suites" not in baseline:
