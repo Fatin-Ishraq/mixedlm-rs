@@ -1,7 +1,7 @@
 {
- "recorded_at": "2026-09-09T20:11:56",
+ "recorded_at": "2026-09-09T21:13:51",
  "environment": {
-  "commit": "ecde11d16d059223f3cd0bfa0e842c62a4d73de7",
+  "commit": "a9d3bc9ffa5bc2f9f49eca4306a17b9720f6ee21",
   "working_tree_dirty": false,
   "mixedlm_rs": "0.1.0",
   "python": "3.14.3",
@@ -21,7 +21,7 @@
   "cases": 120,
   "seed_base": 10000,
   "generator": "tests/test_fuzz.py::random_case",
-  "seconds": 67.15234199999941,
+  "seconds": 88.61838919999991,
   "counts": {
    "reference did not converge": 26,
    "we found a better optimum": 42,
@@ -39,7 +39,7 @@
   "cases": 400,
   "seed": 0,
   "generator": "bench/stress_sweep.py::make_case",
-  "seconds": 178.02989100000013,
+  "seconds": 294.3719679000001,
   "counts": {
    "same optimum": 167,
    "reference did not converge": 99,
@@ -84,11 +84,15 @@
  "suites": {
   "pytest": {
    "returncode": 0,
-   "summary": "516 passed, 3 skipped in 87.99s (0:01:27)"
+   "summary": "516 passed, 4 skipped in 181.70s (0:03:01)",
+   "collected": 520,
+   "passed": 516,
+   "skipped": 4
   },
   "cargo": {
    "returncode": 0,
-   "summary": "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+   "summary": "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+   "collected": 7
   }
  }
 }
