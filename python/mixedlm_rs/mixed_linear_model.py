@@ -1093,6 +1093,26 @@ class MixedLM:
         state["_core_cache"] = None
         state["_design_info"] = None
         state["_re_design_info"] = None
+        # The captured formula namespace was pickle-tested when it was
+        # captured, but a mutable object can stop being picklable afterwards.
+        # Re-testing here means such a case degrades to a named-but-missing
+        # transform -- which predict() reports precisely -- rather than making
+        # the whole model unsaveable.
+        namespace = state.get("_formula_namespace")
+        if namespace:
+            import pickle as _pickle
+            checked = {}
+            for name, value in namespace.items():
+                if isinstance(value, _Unpicklable):
+                    checked[name] = value
+                    continue
+                try:
+                    _pickle.dumps(value)
+                except Exception:
+                    checked[name] = _Unpicklable(name, type(value).__name__)
+                else:
+                    checked[name] = value
+            state["_formula_namespace"] = checked
         return state
 
     def __setstate__(self, state):
