@@ -234,7 +234,7 @@ check. These are finite test suites, not estimates of failure rates in general u
 
 Both experiments are recorded in
 [`bench/baseline.json`](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/bench/baseline.json)
-at commit `0345e45`. The
+at commit `55c20ac`. The
 [correctness report](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/docs/CORRECTNESS.md)
 provides the reference fits, thresholds, generators and known difficult cases.
 
