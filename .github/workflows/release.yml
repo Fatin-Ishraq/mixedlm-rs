@@ -123,7 +123,10 @@ jobs:
         run: ls -la dist/
       - uses: actions/upload-artifact@v4
         with:
-          name: wheel-${{ matrix.platform }}-${{ matrix.target }}
+          # `release-` prefixed, so the publish step can select exactly these
+          # and nothing else. The called CI workflow uploads wheels of its own
+          # under `wheels-<os>`, with filenames identical to these.
+          name: release-wheel-${{ matrix.platform }}-${{ matrix.target }}
           path: dist/*.whl
           if-no-files-found: error
 
@@ -153,7 +156,7 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: sdist
+          name: release-sdist
           path: dist/*.tar.gz
           if-no-files-found: error
 
@@ -169,13 +172,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Every wheel this release builds appears here, on a runner of its
+          # own architecture. `macos-13` was retired by GitHub in December
+          # 2025; `macos-15-intel` is its replacement, and `ubuntu-24.04-arm`
+          # lets the ARM64 Linux wheel be run rather than shipped untested.
+          # Both labels are exercised by ci.yml's `architectures` job, which
+          # also asserts the runner's Python reports the right machine.
           - { platform: linux,   target: x86_64,  runner: ubuntu-latest }
+          - { platform: linux,   target: aarch64, runner: ubuntu-24.04-arm }
           - { platform: macos,   target: aarch64, runner: macos-latest }
-          - { platform: macos,   target: x86_64,  runner: macos-13 }
+          - { platform: macos,   target: x86_64,  runner: macos-15-intel }
           - { platform: windows, target: x64,     runner: windows-latest }
-          # linux/aarch64 is deliberately absent -- see the
-          # `unexecuted-architectures` job, which states that in the run log
-          # rather than leaving it to be inferred from this list.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -183,8 +190,25 @@ jobs:
           python-version: "3.12"
       - uses: actions/download-artifact@v4
         with:
-          name: wheel-${{ matrix.platform }}-${{ matrix.target }}
+          name: release-wheel-${{ matrix.platform }}-${{ matrix.target }}
           path: artifact
+      - name: This runner is ${{ matrix.target }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, platform, sys
+          want = os.environ["WANT"]
+          aliases = {"x86_64": {"x86_64", "AMD64", "x64"},
+                     "x64": {"x86_64", "AMD64", "x64"},
+                     "aarch64": {"aarch64", "arm64", "ARM64"}}
+          machine = platform.machine()
+          print(f"machine={machine!r}")
+          if machine not in aliases[want]:
+              sys.exit(f"runner reports {machine!r}, not {want}; this wheel "
+                       "would not be exercised on its own architecture")
+          PY
+        env:
+          WANT: ${{ matrix.target }}
       # Installs the exact file, with dependencies resolving normally, then
       # checks pip's direct_url.json hash against the file on disk so
       # "installed from the intended artifact" is verified and not assumed.
@@ -195,6 +219,33 @@ jobs:
           wheel=$(ls artifact/*.whl | head -1)
           echo "verifying $wheel"
           python scripts/verify_release_artifacts.py --wheel "$wheel"
+      # Record what was actually installed and run. The publish job admits
+      # only files matching one of these records.
+      - name: Record the verified artifact
+        shell: bash
+        run: |
+          mkdir -p manifest
+          python - <<'PY'
+          import hashlib, json, os, pathlib
+          wheel = sorted(pathlib.Path("artifact").glob("*.whl"))[0]
+          record = {
+              "filename": wheel.name,
+              "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+              "job": os.environ["JOB"],
+              "runner": os.environ["RUNNER"],
+          }
+          out = pathlib.Path("manifest") / f"{os.environ['JOB']}.json"
+          out.write_text(json.dumps(record, indent=1), encoding="utf-8")
+          print(out.read_text(encoding="utf-8"))
+          PY
+        env:
+          JOB: wheel-${{ matrix.platform }}-${{ matrix.target }}
+          RUNNER: ${{ matrix.runner }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-wheel-${{ matrix.platform }}-${{ matrix.target }}
+          path: manifest/*.json
+          if-no-files-found: error
 
   verify-sdist:
     name: rebuild and run the release sdist
@@ -218,6 +269,25 @@ jobs:
           python -m pip install --upgrade pip
           python scripts/verify_release_artifacts.py \
             --sdist "$(ls artifact/*.tar.gz | head -1)"
+      - name: Record the verified artifact
+        run: |
+          mkdir -p manifest
+          python - <<'PY'
+          import hashlib, json, pathlib
+          sdist = sorted(pathlib.Path("artifact").glob("*.tar.gz"))[0]
+          pathlib.Path("manifest/sdist.json").write_text(json.dumps({
+              "filename": sdist.name,
+              "sha256": hashlib.sha256(sdist.read_bytes()).hexdigest(),
+              "job": "sdist",
+              "runner": "ubuntu-latest",
+          }, indent=1), encoding="utf-8")
+          print(pathlib.Path("manifest/sdist.json").read_text(encoding="utf-8"))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-sdist
+          path: manifest/*.json
+          if-no-files-found: error
 
   notices:
     name: every artifact carries upstream notices
@@ -229,6 +299,10 @@ jobs:
           python-version: "3.12"
       - uses: actions/download-artifact@v4
         with:
+          # Only this release's wheels. Without a pattern this downloads every
+          # artifact in the run, which now includes the called CI workflow's
+          # own wheels -- different builds with identical filenames.
+          pattern: release-wheel-*
           path: collected
           merge-multiple: true
       # A static check, and labelled as one: it reads the archives. The
@@ -264,35 +338,52 @@ jobs:
           print(f"{len(wheels)} wheels, all carrying upstream notices")
           PY
 
-  unexecuted-architectures:
-    name: architectures shipped without being run
+  # Every wheel this release builds is installed and run on a runner of its
+  # own architecture, so there is no cross-compiled-but-unexecuted artifact to
+  # disclose. This job says so explicitly and fails if that stops being true,
+  # because "which platforms were actually run" is exactly the claim that
+  # should not have to be reconstructed from a job list.
+  platform-coverage:
+    name: every built wheel was executed
     needs: [verify-wheels, verify-sdist]
     runs-on: ubuntu-latest
     steps:
-      # Stated in the run log, on purpose. A wheel that was cross-compiled and
-      # never executed is a different kind of evidence from one that was
-      # installed and fitted a model, and the difference should not have to be
-      # reconstructed from the job list.
-      - name: State what was not executed
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Built platforms and executed platforms agree
         run: |
-          cat <<'TXT'
-          Executed: linux/x86_64, macos/aarch64, macos/x86_64, windows/x64
-          -- each installed from its exact wheel on a matching runner and used
-          to fit a model, plus a wheel rebuilt from the exact sdist.
+          python -m pip install --quiet pyyaml
+          python - <<'PY'
+          import pathlib, sys, yaml
 
-          NOT executed: linux/aarch64.
-          It is cross-compiled by maturin-action under QEMU and no arm64 Linux
-          runner is used here, so it has been built and its contents read, but
-          never imported or run. Treat it as untested until an arm64 runner is
-          added to verify-wheels.
-          TXT
+          spec = yaml.safe_load(
+              pathlib.Path(".github/workflows/release.yml").read_text())
+          built = {(e["platform"], e["target"]) for e in
+                   spec["jobs"]["wheels"]["strategy"]["matrix"]["include"]}
+          ran = {(e["platform"], e["target"]): e["runner"] for e in
+                 spec["jobs"]["verify-wheels"]["strategy"]["matrix"]["include"]}
+
+          for key in sorted(built):
+              state = f"executed on {ran[key]}" if key in ran else "NOT EXECUTED"
+              print(f"  {key[0]}/{key[1]:<8} {state}")
+          gap = sorted(built - set(ran))
+          if gap:
+              sys.exit(
+                  "these wheels would be published without being run: "
+                  + ", ".join(f"{p}/{t}" for p, t in gap)
+                  + ". Either add a runner of that architecture to "
+                    "verify-wheels, or stop building the wheel.")
+          print(f"\nall {len(built)} wheels executed on their own architecture")
+          PY
 
   publish:
     name: publish to ${{ inputs.publish_to || 'pypi' }}
     # Every gate, not just the build. `tests` is the full CI suite for this
     # exact commit; the verify jobs ran the actual artifacts.
     needs: [tests, verify-wheels, verify-sdist, notices,
-            unexecuted-architectures]
+            platform-coverage]
     if: >-
       github.event_name == 'push' ||
       inputs.publish_to == 'pypi' ||
@@ -311,11 +402,42 @@ jobs:
       # to create, paste, rotate, or leak.
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
+          python-version: "3.12"
+      # `pattern:` is the whole point. Downloading without one takes *every*
+      # artifact in the run, and this run also contains the called CI
+      # workflow's wheels -- built under different conditions, with filenames
+      # identical to the release wheels. `merge-multiple` then flattens them
+      # into one directory, where a CI wheel silently replaces the release
+      # wheel that the verify jobs actually installed and ran.
+      - name: Download only this release's distributions
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
           path: dist
           merge-multiple: true
-      - run: ls -la dist/
+      # The verify jobs' records: filename and sha256 of what each of them
+      # installed and ran.
+      - name: Download the verification records
+        uses: actions/download-artifact@v4
+        with:
+          pattern: verified-*
+          path: manifests
+      - run: ls -laR dist/ manifests/
+      # Refuses to publish an unexpected file, a missing one, a duplicate
+      # filename, or a file whose hash changed after it was verified.
+      # `--expect 6` is the five wheels plus the sdist; a platform that fails
+      # to build stops the release rather than shipping a short set.
+      - name: Every file to be published was verified
+        run: |
+          python scripts/check_release_set.py \
+            --dist dist --manifests manifests --expect 6
+      - name: Metadata is well formed
+        run: |
+          python -m pip install --upgrade pip twine
+          python -m twine check --strict dist/*
       - name: Publish
         uses: pypa/gh-action-pypi-publish@release/v1
         with:

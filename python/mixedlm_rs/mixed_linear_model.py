@@ -171,6 +171,12 @@ def _vech_row(mat):
     return np.array([mat[r, c] for r in range(k) for c in range(r + 1)])
 
 
+# Rebuilds allowed while removing non-finite rows. Each pass strictly shrinks
+# the row set, so this is a guard against a pathological transform rather than
+# an expected cost: the reproductions all settle in one.
+_MAX_FINITE_PASSES = 8
+
+
 def _designs(formula, re_formula, data, missing, eval_env):
     """Build the fixed and random designs, dropping missing rows once.
 
@@ -226,6 +232,42 @@ def _designs(formula, re_formula, data, missing, eval_env):
             idx = idx.intersection(f.index)
         kept = np.asarray(idx, dtype=np.intp)
         y, X, Z, re_info, re_names = build(data.iloc[kept], "raise")
+
+    # patsy does not treat an infinity as missing, so a design can come back
+    # complete by its rules and still hold values no model can be fitted to.
+    # Those rows used to be removed *after* this, by the constructor, which
+    # left the design's stateful transforms holding state learned from rows
+    # the model was never fitted on: `center(x)` centred on 200 rows while 199
+    # were fitted, restoring recomputed it on 199, and predictions moved by
+    # 0.083 with nothing raised.
+    #
+    # So the non-finite rows are resolved here, in the same place as the
+    # missing ones, and the design is rebuilt on what survives. It is a loop
+    # rather than one extra pass because a *transform* can produce the
+    # infinity -- `np.log(w)` with a zero -- and because relearning state on a
+    # smaller frame can in principle expose another one. It converges: each
+    # pass either removes rows or stops.
+    if missing == "drop":
+        for _ in range(_MAX_FINITE_PASSES):
+            finite = (np.isfinite(np.asarray(y, float)[:, 0])
+                      & np.all(np.isfinite(np.asarray(X, float)), axis=1)
+                      & np.all(np.isfinite(np.asarray(Z, float)), axis=1))
+            if finite.all():
+                break
+            if not finite.any():
+                raise ValueError(
+                    "every row of the design is non-finite after evaluating "
+                    f"{formula!r}. A transform in the formula is producing "
+                    "infinities for every observation -- log of a "
+                    "non-positive column, or a division by zero.")
+            kept = kept[finite]
+            y, X, Z, re_info, re_names = build(data.iloc[kept], "raise")
+        else:
+            raise ValueError(
+                f"the design for {formula!r} still contains non-finite values "
+                f"after {_MAX_FINITE_PASSES} rebuilds. A stateful transform "
+                "appears to keep producing them as rows are removed; build "
+                "the design yourself and pass it with transform=False.")
 
     names = {
         "endog": str(y.design_info.column_names[0]),
@@ -1331,17 +1373,20 @@ class MixedLM:
                                   NA_action="raise", **kwargs)
             fe_info = design.design_info
             re_info = self._re_design_info
+            re_values = None
             rf = self.re_formula
             if rf is not None and str(rf).strip() not in ("1", "~1", ""):
-                re_info = dmatrix(str(rf), frame, return_type="matrix",
-                                  NA_action="raise", **kwargs).design_info
+                re_design = dmatrix(str(rf), frame, return_type="matrix",
+                                    NA_action="raise", **kwargs)
+                re_info = re_design.design_info
+                re_values = np.asarray(re_design, float)
 
             # The rebuild has to reproduce the design that was *fitted*, not
-            # merely produce a design. A stateful transform that relearned
-            # different state shows up here as a different column count or
-            # different column names, and predicting through it would return
-            # plausible numbers from the wrong model.
-            self._check_rebuilt(fe_info, np.asarray(design).shape[0])
+            # merely produce a design of the same shape. Checking names and
+            # dimensions accepted a design whose values differed by 0.05,
+            # because a stateful transform had relearned its state on a
+            # different row set -- the numbers were plausible and wrong.
+            self._check_rebuilt(fe_info, np.asarray(design, float), re_values)
         except Exception as exc:
             # Assigned only on full success. Keeping a half-rebuilt design
             # leaves the model in a state where the fixed part was relearned
@@ -1355,8 +1400,21 @@ class MixedLM:
         self._re_design_info = re_info
         return True
 
-    def _check_rebuilt(self, fe_info, n_rows) -> None:
-        """Assert the rebuilt design matches the one that was fitted."""
+    # Rebuilt and fitted designs are compared exactly. They are produced by
+    # running the same formula over the same rows, so any difference at all
+    # means the state differs -- there is no floating-point noise to allow
+    # for, and a tolerance would only hide the thing being looked for.
+    _REBUILD_ATOL = 0.0
+
+    def _check_rebuilt(self, fe_info, fe_values, re_values=None) -> None:
+        """Assert the rebuilt design matches the one that was fitted.
+
+        Names and dimensions are not enough. A stateful transform that
+        relearned its state on a different row set produces a design of
+        exactly the same shape with different numbers in it, and predicting
+        through that returns plausible values from a model that was never
+        fitted. So the values are compared too, for both designs.
+        """
         names = list(fe_info.column_names)
         if len(names) != self.k_fe:
             raise ValueError(
@@ -1372,12 +1430,37 @@ class MixedLM:
             raise ValueError(
                 f"rebuilding the design produced different column names: "
                 f"{names} against the fitted {expected}.")
-        if n_rows != self.exog.shape[0]:
+        if fe_values.shape[0] != self.exog.shape[0]:
             raise ValueError(
-                f"rebuilding the design produced {n_rows} rows, but the model "
-                f"was fitted on {self.exog.shape[0]}. This is a row-selection "
-                "inconsistency inside this package, not a problem with your "
-                "formula or your session." + self._row_trace())
+                f"rebuilding the design produced {fe_values.shape[0]} rows, "
+                f"but the model was fitted on {self.exog.shape[0]}. This is a "
+                "row-selection inconsistency inside this package, not a "
+                "problem with your formula or your session."
+                + self._row_trace())
+
+        self._compare_design("fixed-effect", fe_values, self.exog)
+        if re_values is not None:
+            self._compare_design("random-effect", re_values, self.exog_re)
+
+    def _compare_design(self, which, rebuilt, fitted) -> None:
+        if rebuilt.shape != fitted.shape:
+            raise ValueError(
+                f"the rebuilt {which} design is {rebuilt.shape}, but the "
+                f"model was fitted with {fitted.shape}." + self._row_trace())
+        if np.array_equal(rebuilt, fitted):
+            return
+        gap = float(np.max(np.abs(rebuilt - fitted)))
+        where = np.unravel_index(int(np.argmax(np.abs(rebuilt - fitted))),
+                                 rebuilt.shape)
+        raise ValueError(
+            f"the rebuilt {which} design has the same shape and column names "
+            f"as the fitted one but different values: they differ by up to "
+            f"{gap:.6g}, first at row {where[0]}, column {where[1]} "
+            f"({rebuilt[where]:.9g} against {fitted[where]:.9g}). A stateful "
+            f"transform in {self.formula!r} learned different state on the "
+            "rebuild, so predicting through it would return plausible numbers "
+            "from a model that was never fitted. The rebuilt design is "
+            "discarded." + self._row_trace())
 
     def _row_trace(self) -> str:
         """How many rows survived each selection step, for an error message.

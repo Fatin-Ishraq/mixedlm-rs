@@ -230,11 +230,24 @@ Two caveats worth stating:
 
 ## Platforms actually tested
 
-Built and tested on **Windows 11, Python 3.11 and 3.14**. The wheel is `abi3`
-for Python ≥ 3.10 and the package declares support for 3.10–3.14, but Linux,
-macOS and Python 3.10/3.12/3.13 have not been exercised. The CI workflow that
-would cover them is committed but has never run, because the repository has no
-remote. Treat the support range as declared-but-unverified until it has.
+The full suite runs in CI on **Linux, macOS and Windows** against **Python
+3.10, 3.11, 3.12, 3.13 and 3.14** -- fifteen combinations -- plus a job pinned
+to the exact declared dependency floors (`numpy==1.23.0`, `scipy==1.9.0`,
+`pandas==1.5.0`, `patsy==0.5.3`) on Python 3.10, and the minimum supported Rust
+version. The CI badge in the README is the live answer for the current commit.
+
+Two architectures are not covered by that matrix, because it runs on
+`ubuntu-latest` (x86_64) and `macos-latest` (arm64): **Intel macOS** and
+**ARM64 Linux**. Each is built as a release wheel, so each is exercised
+separately -- a CI job installs and runs a wheel on `macos-15-intel` and on
+`ubuntu-24.04-arm`, and the release workflow verifies the actual release wheel
+on those same runners. No wheel is published that has not been installed and
+used to fit a model on its own architecture.
+
+An earlier version of this section said the CI workflow "has never run, because
+the repository has no remote". That stopped being true once the repository was
+published; it is recorded here because a stale limitation is worse than a
+missing one -- it invites a reader to discount the rest.
 
 ## Scale
 

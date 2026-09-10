@@ -274,11 +274,17 @@ class TestSerialisationKeepsPredictions:
         # Point the rebuild at the *unfiltered* frame, which is what the bug
         # did. The check must reject the result rather than predict with it.
         model._design_rows = np.arange(len(model.data_frame), dtype=np.intp)
+        # `_check_rebuilt` now takes the rebuilt design's *values*, not just a
+        # row count: a rebuild can match on names and dimensions and still
+        # hold different numbers. Both rejections are exercised -- wrong row
+        # count here, wrong values in tests/test_recheck3_regressions.py.
+        import patsy
+        rebuilt = patsy.dmatrix("center(x)", model.data_frame,
+                                NA_action="drop")
+        wrong_rows = np.vstack([np.asarray(rebuilt, float),
+                                np.asarray(rebuilt, float)[-1:]])
         with pytest.raises(ValueError, match="rebuilding the design"):
-            model._check_rebuilt(
-                __import__("patsy").dmatrix("center(x)", model.data_frame,
-                                            NA_action="drop").design_info,
-                model.exog.shape[0] + 1)
+            model._check_rebuilt(rebuilt.design_info, wrong_rows)
 
 
 def module_level_square(v):

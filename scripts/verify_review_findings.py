@@ -1096,13 +1096,26 @@ def t5():
     publish = data["jobs"]["publish"]["needs"]
     required = {"tests", "verify-wheels", "verify-sdist"}
     callable_ci = "workflow_call" in ci
-    runners = {entry["runner"] for entry in
-               data["jobs"]["verify-wheels"]["strategy"]["matrix"]["include"]}
-    states_gap = "NOT executed: linux/aarch64" in release
-    return (required <= set(publish) and callable_ci and len(runners) >= 3
-            and states_gap), \
-        (f"publish needs {sorted(publish)}; wheels run on {len(runners)} "
-         "runner types; unexecuted architectures stated")
+    built = {(e["platform"], e["target"]) for e in
+             data["jobs"]["wheels"]["strategy"]["matrix"]["include"]}
+    ran = {(e["platform"], e["target"]) for e in
+           data["jobs"]["verify-wheels"]["strategy"]["matrix"]["include"]}
+    gap = sorted(built - ran)
+    # Every published wheel is installed and run on its own architecture, so
+    # there is no gap left to disclose -- an earlier version of this check
+    # required the disclosure text, which is now simply false.
+    retired = any("macos-13" in line and not line.strip().startswith("#")
+                  for line in release.splitlines())
+    selective = "pattern: release-*" in release
+    gated = "check_release_set.py" in release
+    ok = (required <= set(publish) and callable_ci and not gap
+          and not retired and selective and gated)
+    return ok, (
+        f"publish needs {sorted(publish)}; all {len(built)} wheels executed "
+        "on their own architecture; upload set selected and hash-checked"
+        if ok else
+        f"gap={gap} retired_runner={retired} selective={selective} "
+        f"gated={gated}")
 
 
 def t6():

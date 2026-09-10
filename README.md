@@ -37,27 +37,56 @@ pip install --find-links dist mixedlm-rs
 The build is `abi3`, so one wheel per platform will cover Python 3.10–3.14 once
 these are published, and there will be nothing to compile.
 
-**Currently verified:** wheels on Linux, macOS and Windows, each built and then
-installed into a clean environment *outside* the source tree and smoke-tested
-there, plus a wheel rebuilt from the unpacked sdist
-(`python scripts/verify_release.py`). The suite runs on all three operating
-systems against Python 3.10, 3.11, 3.12, 3.13 and 3.14, and against the exact
-declared dependency floors on 3.10. The CI badge above is the live answer.
+**Currently verified:** the full suite runs in CI on Linux, macOS and Windows
+against Python 3.10 through 3.14, plus the exact declared dependency floors on
+3.10 and the minimum supported Rust version. Every wheel this project publishes
+is installed into a clean environment *outside* the source tree and used to fit
+a model there, on a runner of its own architecture — including Intel macOS and
+ARM64 Linux, which the ordinary matrix does not cover. A wheel rebuilt from the
+unpacked sdist gets the same treatment. The CI badge above is the live answer
+for the current commit.
 
-Not yet verified: any platform CI does not run — 32-bit, musl, and Linux
-aarch64, which the release workflow cross-compiles but does not execute.
+Not verified: any platform CI does not run — 32-bit, musl, and any
+architecture outside the five wheels listed above.
 
+Runs as-is after `pip install` — no data file to fetch. Eighteen subjects,
+each measured over ten days, each with their own intercept and slope:
+
+<!-- readme-example -->
 ```python
+import numpy as np
 import pandas as pd
 import mixedlm_rs as mlm
 
-sleep = pd.read_csv("sleepstudy.csv")     # reaction times over 10 days of sleep deprivation
+rng = np.random.default_rng(0)
+subjects, days = 18, 10
+subject = np.repeat(np.arange(subjects), days)
+day = np.tile(np.arange(days), subjects)
+
+# Each subject gets their own baseline and their own rate of change.
+intercept = rng.normal(250, 25, subjects)[subject]
+slope = rng.normal(10, 6, subjects)[subject]
+reaction = intercept + slope * day + rng.normal(0, 25, subjects * days)
+
+sleep = pd.DataFrame({"Reaction": reaction, "Days": day, "Subject": subject})
 
 model = mlm.mixedlm("Reaction ~ Days", sleep,
                     groups=sleep["Subject"],   # each subject measured 10 times
                     re_formula="~Days")        # and each has their own slope
-print(model.fit().summary())
+result = model.fit()
+print(result.summary())
+
+print(f"\nfixed effects: {result.fe_params}")
+print(f"converged: {result.converged}")
 ```
+<!-- /readme-example -->
+
+The same model on `lme4`'s **`sleepstudy`** — the dataset this example imitates
+— reproduces `lme4`'s published fit to six decimals. That CSV is GPL-2 and is
+not shipped with the package (see [data/README.md](data/README.md)); with a copy
+in hand it is `pd.read_csv("sleepstudy.csv")` in place of the frame above, and
+the fit is the one shown below.
+
 
 ```
                     Mixed Linear Model Regression Results
@@ -294,7 +323,7 @@ do `fe_pen`, `cov_pen` and `free`. GLMMs are out of scope.
 ## Is it actually the same?
 
 That is the only question that matters for a drop-in, so it is what the test
-suite is built around — **625 Python tests and 7 Rust tests**, with
+suite is built around — **681 Python tests and 7 Rust tests**, with
 `statsmodels`, `mypy` and the lme4 fixtures installed. Fewer are collected
 without them: the differential comparisons skip at import, so a minimal
 environment collects 398 rather than skipping 178.
