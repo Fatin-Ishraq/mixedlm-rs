@@ -1,7 +1,7 @@
 {
- "recorded_at": "2026-09-09T22:43:35",
+ "recorded_at": "2026-09-10T12:27:13",
  "environment": {
-  "commit": "f925ebfb41148a28deff580d93172558619b7347",
+  "commit": "4934d23c50b685ec464e60f717fb572b15e73f98",
   "working_tree_dirty": false,
   "mixedlm_rs": "0.1.0",
   "python": "3.14.3",
@@ -17,16 +17,23 @@
    "statsmodels": "0.15.0"
   },
   "extension_name": "mixedlm_rs/_mixedlm_rs.pyd",
-  "extension_sha256": "b3f3b7cdf58aa5c62cfd08c7859bf69b06f690065d7ebf1a7cdbe810b59218c1",
+  "extension_sha256": "11bd6a2ba1c3c9d68112c98b54741434e7950af7bae4f4230af4747d2621362c",
   "extension_bytes": 359424,
   "package_location": "site-packages/mixedlm_rs",
-  "imported_from_checkout": false
+  "imported_from_checkout": false,
+  "python_sources_sha256": "295287744537495060302f9f91262c463723ba992820d356ba39288f50f49699",
+  "python_sources_files": [
+   "__init__.py",
+   "_fit.py",
+   "_install.py",
+   "mixed_linear_model.py"
+  ]
  },
  "differential": {
   "cases": 120,
   "seed_base": 10000,
   "generator": "tests/test_fuzz.py::random_case",
-  "seconds": 61.2786744999994,
+  "seconds": 81.58773920000021,
   "counts": {
    "reference did not converge": 26,
    "we found a better optimum": 42,
@@ -44,7 +51,7 @@
   "cases": 400,
   "seed": 0,
   "generator": "bench/stress_sweep.py::make_case",
-  "seconds": 176.64444750000075,
+  "seconds": 177.6767175,
   "counts": {
    "same optimum": 167,
    "reference did not converge": 99,
@@ -89,9 +96,9 @@
  "suites": {
   "pytest": {
    "returncode": 0,
-   "summary": "570 passed, 4 skipped in 102.94s (0:01:42)",
-   "collected": 574,
-   "passed": 570,
+   "summary": "620 passed, 4 skipped, 2 warnings in 104.40s (0:01:44)",
+   "collected": 624,
+   "passed": 620,
    "skipped": 4
   },
   "cargo": {
