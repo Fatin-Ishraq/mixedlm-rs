@@ -128,7 +128,7 @@ def outcomes_chart(baseline, theme, path):
 
     fig, ax = plt.subplots(figsize=(7.2, 1.7), dpi=200)
     left = 0
-    for key, label, colour in order:
+    for key, _label, colour in order:
         value = counts.get(key, 0)
         if value:
             # A 2px surface gap between segments rather than a stroke.
@@ -147,11 +147,9 @@ def outcomes_chart(baseline, theme, path):
     for side in ("top", "right", "left", "bottom"):
         ax.spines[side].set_visible(False)
 
-    x = 0.0
     for key, label, colour in order:
         value = counts.get(key, 0)
         ax.plot([], [], color=colour, linewidth=6, label=f"{label} — {value}")
-        x += value
     legend = ax.legend(loc="upper left", bbox_to_anchor=(0, 0.05), ncols=2,
                        frameon=False, fontsize=9.5, handlelength=1.1,
                        borderpad=0, columnspacing=1.6, handletextpad=0.6)
