@@ -1,0 +1,236 @@
+{
+ "recorded_at": "2026-09-10T17:02:34",
+ "environment": {
+  "commit": "b34a88a141a8210fd1eb3d911f6174a0ef8c99c3",
+  "working_tree_dirty": false,
+  "mixedlm_rs": "0.1.0",
+  "extension_sha256": "8ec5f8632e6091f9677f5f798b8242b9c7594b49f40a0af0df494ac5711bf9b7",
+  "python": "3.14.3",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "processor": "AMD64 Family 25 Model 80 Stepping 0, AuthenticAMD",
+  "logical_cpus": 12,
+  "rayon_num_threads": "unset (rayon uses all logical cpus)",
+  "omp_num_threads": "unset",
+  "openblas_num_threads": "unset",
+  "repetitions": 3,
+  "statistic": "minimum of the repetitions",
+  "dependencies": {
+   "numpy": "2.5.2",
+   "scipy": "1.18.1",
+   "pandas": "3.0.5",
+   "patsy": "1.0.3",
+   "statsmodels": "0.15.0"
+  }
+ },
+ "quick": false,
+ "measured": {
+  "comparison": "mixedlm-rs against statsmodels, same machine, same process, agreement checked before timing",
+  "rows": [
+   {
+    "n": 2000,
+    "groups": 100,
+    "ours_seconds": 0.008166999999957625,
+    "ours_repetitions": [
+     0.01078600000073493,
+     0.008166999999957625,
+     0.008261799999672803
+    ],
+    "ours_converged": true,
+    "statsmodels_seconds": 0.32492480000018986,
+    "statsmodels_repetitions": [
+     0.3258040999999139,
+     0.32492480000018986,
+     0.3311727999998766
+    ],
+    "statsmodels_converged": true,
+    "speedup": 39.7850863232369,
+    "agreement": {
+     "fixed_effects_in_standard_errors": 6.557245203997519e-06,
+     "cov_re_relative": 7.58385612525947e-05,
+     "delta_loglik": 1.1693216492858483e-06
+    }
+   },
+   {
+    "n": 10000,
+    "groups": 500,
+    "ours_seconds": 0.009050099999512895,
+    "ours_repetitions": [
+     0.01011220000054891,
+     0.009557800000038696,
+     0.009050099999512895
+    ],
+    "ours_converged": true,
+    "statsmodels_seconds": 1.6547642000004998,
+    "statsmodels_repetitions": [
+     1.6547642000004998,
+     1.659910200000013,
+     1.6833670999994865
+    ],
+    "statsmodels_converged": true,
+    "speedup": 182.84485255296235,
+    "agreement": {
+     "fixed_effects_in_standard_errors": 4.484337645061885e-07,
+     "cov_re_relative": 1.4302231370780932e-05,
+     "delta_loglik": 2.8016620490234345e-07
+    }
+   },
+   {
+    "n": 20000,
+    "groups": 1000,
+    "ours_seconds": 0.011109699999906297,
+    "ours_repetitions": [
+     0.011899100000846374,
+     0.011185399999703804,
+     0.011109699999906297
+    ],
+    "ours_converged": true,
+    "statsmodels_seconds": 2.5430435999996917,
+    "statsmodels_repetitions": [
+     2.5744344000004276,
+     2.583141200000682,
+     2.5430435999996917
+    ],
+    "statsmodels_converged": true,
+    "speedup": 228.90299468222727,
+    "agreement": {
+     "fixed_effects_in_standard_errors": 3.3598763547015154e-07,
+     "cov_re_relative": 2.555538154302246e-05,
+     "delta_loglik": 1.0792900866363198e-06
+    }
+   },
+   {
+    "n": 40000,
+    "groups": 5000,
+    "ours_seconds": 0.016660999999658088,
+    "ours_repetitions": [
+     0.018070100000841194,
+     0.016660999999658088,
+     0.017378200000166544
+    ],
+    "ours_converged": true,
+    "statsmodels_seconds": 11.018993700000465,
+    "statsmodels_repetitions": [
+     11.6202002,
+     11.074787399999877,
+     11.018993700000465
+    ],
+    "statsmodels_converged": true,
+    "speedup": 661.3644859388148,
+    "agreement": {
+     "fixed_effects_in_standard_errors": 2.0422050464431714e-06,
+     "cov_re_relative": 1.7831320743659713e-05,
+     "delta_loglik": 2.3248576326295733e-06
+    }
+   },
+   {
+    "n": 100000,
+    "groups": 20000,
+    "ours_seconds": 0.038353799999640614,
+    "ours_repetitions": [
+     0.038353799999640614,
+     0.038604100000156905,
+     0.04142099999990023
+    ],
+    "ours_converged": true,
+    "statsmodels_seconds": 41.87318899999991,
+    "statsmodels_repetitions": [
+     41.87318899999991
+    ],
+    "statsmodels_converged": true,
+    "speedup": 1091.7611553585896,
+    "agreement": {
+     "fixed_effects_in_standard_errors": 3.774724083029856e-05,
+     "cov_re_relative": 4.326707363445805e-05,
+     "delta_loglik": 5.06551587022841e-05
+    }
+   },
+   {
+    "n": 200000,
+    "groups": 50000,
+    "ours_seconds": 0.07320230000004813,
+    "ours_repetitions": [
+     0.07320230000004813,
+     0.07335229999989679,
+     0.07475730000078329
+    ],
+    "ours_converged": true,
+    "statsmodels_seconds": 102.79138450000028,
+    "statsmodels_repetitions": [
+     102.79138450000028
+    ],
+    "statsmodels_converged": true,
+    "speedup": 1404.2097652660188,
+    "agreement": {
+     "fixed_effects_in_standard_errors": 1.1548808817006589e-05,
+     "cov_re_relative": 3.656653485379465e-05,
+     "delta_loglik": 6.86563435010612e-05
+    }
+   },
+   {
+    "n": 500264,
+    "groups": 125066,
+    "ours_seconds": 0.21799670000018523,
+    "ours_repetitions": [
+     0.24169489999985672,
+     0.25980860000072425,
+     0.21799670000018523
+    ],
+    "ours_converged": true,
+    "statsmodels_seconds": null,
+    "statsmodels_repetitions": null,
+    "statsmodels_converged": null,
+    "speedup": null,
+    "agreement": null,
+    "statsmodels_note": "not timed: at this scale statsmodels dominates the run; see docs/BENCHMARKS.md for the reported figure"
+   }
+  ]
+ },
+ "historical": {
+  "source": "bench/vs_lme4.py, recorded 2026-09-08",
+  "environment": {
+   "note": "R toolchain present; not available on the recording machine for the current candidate",
+   "R": "4.6.1",
+   "lme4": "2.0.6",
+   "rpy2": "3.6.7",
+   "pymer4": "0.9.2"
+  },
+  "caveat": "pymer4 timings are the end-to-end cost of fitting through pymer4, which also runs lmerTest for Satterthwaite degrees of freedom and extracts results as R objects. They are not a measurement of rpy2 marshalling alone.",
+  "rows": [
+   {
+    "n": 10000,
+    "groups": 500,
+    "ours": 0.01,
+    "lme4": 0.08,
+    "pymer4": 1.71
+   },
+   {
+    "n": 40000,
+    "groups": 5000,
+    "ours": 0.017,
+    "lme4": 0.33,
+    "pymer4": 11.67
+   },
+   {
+    "n": 100000,
+    "groups": 20000,
+    "ours": 0.038,
+    "lme4": 1.12,
+    "pymer4": 118.1
+   },
+   {
+    "n": 200000,
+    "groups": 50000,
+    "ours": 0.078,
+    "lme4": 2.51,
+    "pymer4": 747.28
+   },
+   {
+    "n": 500264,
+    "groups": 125066,
+    "ours": 0.169,
+    "lme4": 7.33,
+    "pymer4": null
+   }
+  ]
+ }
+}

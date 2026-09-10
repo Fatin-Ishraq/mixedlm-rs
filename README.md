@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/logo.svg" alt="" width="96" height="96">
+
 # mixedlm-rs
 
 **`lmer` for Python.**
@@ -191,6 +193,13 @@ Across **120 randomised fixtures**, comparing against `statsmodels`:
 | same optimum | 52 |
 | mixedlm-rs found a **worse** optimum | **0** |
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/outcomes-dark.svg">
+  <img src="docs/assets/outcomes-light.svg"
+       alt="The same 120 fixtures as one bar: 42 better optimum, 52 same optimum, 26 statsmodels did not converge, 0 worse."
+       width="100%">
+</picture>
+
 On 56.7% of fixtures the reference either failed or landed somewhere worse.
 Reproduce the counts with `python bench/differential_table.py`.
 
@@ -217,11 +226,27 @@ a warning.
 
 | n | groups | statsmodels | mixedlm-rs | |
 |---:|---:|---:|---:|---|
-| 10,000 | 500 | 2.31 s | **0.011 s** | 218x |
-| 40,000 | 5,000 | 16.59 s | **0.019 s** | 870x |
-| 100,000 | 20,000 | 61.00 s | **0.042 s** | 1454x |
-| 200,000 | 50,000 | 160.48 s | **0.087 s** | 1836x |
-| 500,264 | **125,066** | — | **0.197 s** | |
+| 10,000 | 500 | 1.65 s | **0.009 s** | 183x |
+| 40,000 | 5,000 | 11.02 s | **0.017 s** | 661x |
+| 100,000 | 20,000 | 41.87 s | **0.038 s** | 1092x |
+| 200,000 | 50,000 | 102.79 s | **0.073 s** | 1404x |
+| 500,264 | **125,066** | — | **0.218 s** | |
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/scaling-dark.svg">
+  <img src="docs/assets/scaling-light.svg"
+       alt="Fit time against grouping factor levels, log-log. statsmodels rises from 0.3 to 103 seconds; mixedlm-rs stays between 0.008 and 0.073 seconds."
+       width="100%">
+</picture>
+
+Re-measured on 2026-09-10 for this release; earlier revisions of this table
+published **higher** speedups (218x / 870x / 1454x / 1836x) that no longer
+reproduce. Running the original `bench/scaling.py` on the same machine today
+gives 161x / 598x / 1078x / 1370x, and the recorded run above gives 183x / 661x
+/ 1092x / 1404x — the two agree within 12%, and both disagree with what was
+published. statsmodels is simply faster now than when those figures were taken;
+what changed between the two recordings is not established, so the old numbers
+are treated as superseded rather than explained.
 
 Agreement is **enforced**, not reported: the benchmark aborts rather than print
 a timing if the fixed effects differ by more than 0.05 of a standard error, the

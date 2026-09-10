@@ -99,7 +99,7 @@ def scaling_chart(perf, theme, path):
                 color=theme["theirs"], fontsize=11)
     ax.annotate("mixedlm-rs", (groups[-1], ours[-1]),
                 textcoords="offset points", xytext=(-6, -18), ha="right",
-                color=theme["ours"], fontsize=11, fontweight="medium")
+                color=theme["ours"], fontsize=11, fontweight="bold")
 
     best = max(rows, key=lambda r: r["speedup"])
     ax.annotate(f"{best['speedup']:.0f}x at {best['groups']:,} groups",
@@ -137,7 +137,7 @@ def outcomes_chart(baseline, theme, path):
             if value / cases > 0.06:
                 ax.text(left + value / 2, 0, str(value), ha="center",
                         va="center", color="#ffffff", fontsize=11,
-                        fontweight="medium", zorder=4)
+                        fontweight="bold", zorder=4)
         left += value
 
     ax.set_xlim(0, cases)

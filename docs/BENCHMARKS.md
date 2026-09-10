@@ -57,13 +57,27 @@ spread is inspectable rather than something you have to take on trust.
 
 | n | groups | statsmodels | conv | mixedlm-rs | conv | speedup | fe (SEs) | re (rel) | dlogLik |
 |---:|---:|---:|:---:|---:|:---:|---:|---:|---:|---:|
-| 2,000 | 100 | 0.39 s | True | **0.012 s** | True | **33x** | 6.6e-06 | 7.6e-05 | +1.2e-06 |
-| 10,000 | 500 | 2.31 s | True | **0.011 s** | True | **218x** | 4.5e-07 | 1.4e-05 | +2.8e-07 |
-| 20,000 | 1,000 | 4.00 s | True | **0.018 s** | True | **227x** | 3.4e-07 | 2.6e-05 | +1.1e-06 |
-| 40,000 | 5,000 | 16.59 s | True | **0.019 s** | True | **870x** | 2.0e-06 | 1.8e-05 | +2.3e-06 |
-| 100,000 | 20,000 | 61.00 s | True | **0.042 s** | True | **1454x** | 3.8e-05 | 4.3e-05 | +5.1e-05 |
-| 200,000 | 50,000 | 160.48 s | True | **0.087 s** | True | **1836x** | 1.2e-05 | 3.7e-05 | +6.9e-05 |
-| 500,264 | **125,066** | not run | — | **0.197 s** | True | — | — | — | — |
+| 2,000 | 100 | 0.32 s | True | **0.008 s** | True | **40x** | 6.6e-06 | 7.6e-05 | +1.2e-06 |
+| 10,000 | 500 | 1.65 s | True | **0.009 s** | True | **183x** | 4.5e-07 | 1.4e-05 | +2.8e-07 |
+| 20,000 | 1,000 | 2.54 s | True | **0.011 s** | True | **229x** | 3.4e-07 | 2.6e-05 | +1.1e-06 |
+| 40,000 | 5,000 | 11.02 s | True | **0.017 s** | True | **661x** | 2.0e-06 | 1.8e-05 | +2.3e-06 |
+| 100,000 | 20,000 | 41.87 s | True | **0.038 s** | True | **1092x** | 3.8e-05 | 4.3e-05 | +5.1e-05 |
+| 200,000 | 50,000 | 102.79 s | True | **0.073 s** | True | **1404x** | 1.2e-05 | 3.7e-05 | +6.9e-05 |
+| 500,264 | **125,066** | not run | — | **0.218 s** | True | — | — | — | — |
+
+Recorded in `bench/performance.json` at the commit and machine named there,
+three repetitions per case, minimum reported.
+
+> **These numbers replace higher ones.** Earlier revisions published 218x /
+> 870x / 1454x / 1836x for the four middle rows. Those do not reproduce: on
+> 2026-09-10 the original `bench/scaling.py` gave 161x / 598x / 1078x / 1370x
+> on the same machine, and the recorded run above gave 183x / 661x / 1092x /
+> 1404x. The two methods agree within 12% of each other — the gap between them
+> is single-shot timing against a minimum of three — and both disagree with
+> what was published, because statsmodels now fits these fixtures in roughly
+> two thirds of the time the old table records. What changed between the two
+> recordings is not established; the earlier figures are treated as superseded
+> rather than explained away.
 
 - *fe (SEs)* is the largest fixed-effect difference in units of its own
   standard error.
