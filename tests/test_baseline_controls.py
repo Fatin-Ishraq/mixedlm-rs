@@ -178,6 +178,39 @@ def test_the_recorded_artifact_covers_the_python_sources(record):
     assert env.get("python_sources_files"), "no Python sources were listed"
 
 
+def test_the_source_digest_ignores_line_endings(tmp_path):
+    """The digest must describe the source, not the checkout convention.
+
+    git checks the same file out as CRLF on Windows and LF on Linux.
+    Hashing raw bytes therefore made a baseline recorded on one platform
+    report a mismatch against byte-identical code on another -- every
+    Linux and macOS CI job failed on source that was not different in any
+    way that matters.
+    """
+    import hashlib
+
+    lf = b'x = 1\ny = 2\n'
+    crlf = lf.replace(b'\n', b'\r\n')
+    assert lf != crlf, 'the fixture does not actually differ'
+
+    def digest_of(*payloads):
+        digest = hashlib.sha256()
+        for name, raw in payloads:
+            digest.update(name.encode('utf-8'))
+            content = raw.replace(b'\r\n', b'\n')
+            digest.update(hashlib.sha256(content).digest())
+        return digest.hexdigest()
+
+    assert digest_of(('m.py', lf)) == digest_of(('m.py', crlf)), (
+        'the same source hashes differently under CRLF and LF')
+
+    # And the shipped implementation does that normalisation, rather than
+    # this test merely reconstructing a version that would.
+    source = (ROOT / 'bench' / 'baseline.py').read_text(encoding='utf-8')
+    assert 'replace(b' in source and 'r\\n' in repr(source), (
+        'bench/baseline.py no longer normalises line endings')
+
+
 def test_the_installed_sources_match_the_recorded_ones(record):
     """And the correspondence is checked, not merely recorded."""
     env = record["environment"]

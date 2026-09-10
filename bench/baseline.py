@@ -50,6 +50,13 @@ def _python_sources_digest() -> dict:
     The digest is over (relative name, content) pairs in sorted order, so it
     is stable across machines and directories and changes when any module
     does.
+
+    Line endings are normalised out of it first. git checks the same file out
+    as CRLF on Windows and LF on Linux, so hashing raw bytes measures the
+    checkout convention rather than the source: a baseline recorded on Windows
+    reported a mismatch against a CI runner holding byte-identical code. What
+    this is meant to establish is that the *same Python source* is loaded, and
+    a line ending is not part of that.
     """
     import hashlib
 
@@ -61,7 +68,8 @@ def _python_sources_digest() -> dict:
     names = []
     for path in files:
         digest.update(path.name.encode("utf-8"))
-        digest.update(hashlib.sha256(path.read_bytes()).digest())
+        content = path.read_bytes().replace(b"\r\n", b"\n")
+        digest.update(hashlib.sha256(content).digest())
         names.append(path.name)
     return {
         "python_sources_sha256": digest.hexdigest() if names else None,
