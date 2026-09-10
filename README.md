@@ -243,6 +243,11 @@ byte-identical data:
 | 200,000 | 50,000 | **0.078 s** | 2.510 s | 747.28 s | 32x | 9,554x |
 | 500,264 | **125,066** | **0.169 s** | 7.330 s | — | **43x** | — |
 
+Every figure in these tables is recorded in `bench/performance.json` with the
+commit, machine, repetition count and thread settings that produced it; the
+`lme4` and `pymer4` columns are **historical**, from a machine with R, and were
+not re-measured on this build. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
 **The log-likelihood matches `lme4` to six decimals on every fixture.** Same
 answer, 8–43x faster, and the margin widens with the group count.
 

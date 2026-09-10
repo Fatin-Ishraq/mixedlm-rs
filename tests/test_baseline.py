@@ -136,8 +136,11 @@ def test_no_code_has_changed_since_the_baseline_was_recorded(baseline):
         ["git", "ls-files", "--others", "--exclude-standard", "--",
          *NUMERIC_PATHS, *NUMERIC_FILES],
         cwd=ROOT, capture_output=True, text=True)
-    # The baseline file itself is the output, not an input to it.
-    ignore = {"bench/baseline.json"}
+    # Recorded outputs, not inputs. The generators under bench/ stay watched
+    # -- a change to differential_table.py or stress_sweep.py changes the
+    # numbers -- but the JSON files those runs *write* obviously cannot
+    # invalidate themselves.
+    ignore = {"bench/baseline.json", "bench/performance.json"}
     changed = [f for f in diff.stdout.split() if f.strip() and f not in ignore]
     changed += [f + " (untracked)" for f in untracked.stdout.split()
                 if f.strip() and f not in ignore]

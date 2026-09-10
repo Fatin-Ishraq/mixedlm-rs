@@ -74,6 +74,21 @@ print(json.dumps({
 """
 
 
+def readme_example():
+    """The example a reader copies, extracted from the README itself.
+
+    Taken from the file rather than duplicated here, so the thing verified is
+    the text that is published.
+    """
+    import re
+    readme = ROOT / "README.md"
+    if not readme.is_file():
+        return None
+    pattern = (r"<!-- readme-example -->\s*```python\n(.*?)```")
+    found = re.search(pattern, readme.read_text(encoding="utf-8"), re.S)
+    return found.group(1) if found else None
+
+
 def sha256(path: pathlib.Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -141,6 +156,25 @@ def verify(artifact: pathlib.Path, kind: str, keep: bool) -> int:
             print(smoke.stdout or "", smoke.stderr or "", file=sys.stderr)
             failures.append("smoke test failed")
             return 1
+
+        # The documented example, verbatim from the README, against this
+        # artifact. It is the first thing a new user runs, and it used to open
+        # a CSV that neither distribution ships -- so it failed on line four
+        # for everyone who installed from PyPI while passing every test here.
+        example = readme_example()
+        if example is None:
+            failures.append("no `<!-- readme-example -->` block in README.md")
+        else:
+            shown = run([str(python), "-c", example], cwd=str(workdir),
+                        capture_output=True)
+            if shown.returncode != 0:
+                print(shown.stdout or "", shown.stderr or "", file=sys.stderr)
+                failures.append("the README example failed against this "
+                                "artifact")
+            elif "Mixed Linear Model Regression Results" not in shown.stdout:
+                failures.append("the README example produced no summary")
+            else:
+                print("  the README example runs against the installed package")
 
         report = json.loads(smoke.stdout.strip().splitlines()[-1])
         print(f"  imported from {report['package_file']}")

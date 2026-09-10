@@ -18,6 +18,27 @@ and 167 — the same picture, one case moved. That is why `bench/baseline.json`
 records the environment alongside the counts rather than treating it as a
 footnote, and why the reproduction instructions name it.
 
+## Where these numbers come from
+
+Every figure here is recorded, not remembered. `python bench/performance.py`
+re-measures this package against `statsmodels` on the candidate build and
+writes **`bench/performance.json`**, which carries the commit, the extension's
+sha256, the machine, the dependency versions, the repetition count, the thread
+settings, and every individual repetition rather than only the reported
+minimum. `tests/test_performance_evidence.py` holds this document to that file.
+
+Two kinds of number appear below and they are **not** interchangeable:
+
+| | how to read it |
+|---|---|
+| **measured** | `mixedlm-rs` against `statsmodels`, re-run on the candidate build. Agreement is checked *before* any timing is reported -- a fast wrong answer is not a benchmark result -- against the thresholds in `bench/tolerances.py`. |
+| **historical** | the **`lme4`** and **`pymer4`** columns. These need R, `rpy2` and a writable R library, which the recording machine for the current candidate does not have. They are carried forward verbatim from the run named in `performance.json`, tagged with the environment that produced them, and were **not** re-measured on this build. |
+
+The reported figure is the **minimum** of the repetitions, not the mean: a
+timing distribution is bounded below by the true cost and has an unbounded
+right tail made of scheduler noise. Every repetition is in the JSON so the
+spread is inspectable rather than something you have to take on trust.
+
 ## Machine
 
 | | |
@@ -72,7 +93,19 @@ the market. That is **`lme4`** in R -- the reference implementation, and the
 oracle this package's correctness is checked against -- and **`pymer4`**, which
 is the only way a Python user gets genuine `lme4` results today.
 
-All three fitted the same models on byte-identical CSVs. Reproduce with:
+All three fitted the same models on byte-identical CSVs.
+
+> **Historical, not re-measured.** The `lme4` and `pymer4` columns in this
+> section come from the run recorded in `bench/performance.json` under
+> `historical`, on a machine with the R toolchain installed. The candidate
+> build was not re-timed against them, because R, `rpy2` and a writable R
+> library are not present on the machine that recorded it -- and a machine
+> without them can produce no number rather than a wrong one. The
+> `mixedlm-rs` column in the same table is from that same historical run, so
+> the ratios are internally consistent; they are not a claim about the current
+> build's timings. To refresh them, run the commands below on a machine with R.
+
+Reproduce with:
 
 ```bash
 python bench/vs_lme4.py --write            # fixtures + mixedlm-rs timings

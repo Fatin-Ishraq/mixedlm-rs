@@ -1,7 +1,7 @@
 {
- "recorded_at": "2026-09-10T13:00:04",
+ "recorded_at": "2026-09-10T16:42:53",
  "environment": {
-  "commit": "8f694c0ae9c49377c810b0da22ed33bcbd39a6d7",
+  "commit": "2e7a7dfa92e6c18143e5c52a98bec0a5b7305afd",
   "working_tree_dirty": false,
   "mixedlm_rs": "0.1.0",
   "python": "3.14.3",
@@ -17,11 +17,11 @@
    "statsmodels": "0.15.0"
   },
   "extension_name": "mixedlm_rs/_mixedlm_rs.pyd",
-  "extension_sha256": "11bd6a2ba1c3c9d68112c98b54741434e7950af7bae4f4230af4747d2621362c",
+  "extension_sha256": "8ec5f8632e6091f9677f5f798b8242b9c7594b49f40a0af0df494ac5711bf9b7",
   "extension_bytes": 359424,
   "package_location": "site-packages/mixedlm_rs",
   "imported_from_checkout": false,
-  "python_sources_sha256": "5b3a6444a24e59f04dba553febfaf74a6cd232ce59904852695032c4d80bc47b",
+  "python_sources_sha256": "1871923fefaa773fa3ab8f6239cb9f4152a16b0ce8a12c616c862ee62f7ef947",
   "python_sources_files": [
    "__init__.py",
    "_fit.py",
@@ -33,7 +33,7 @@
   "cases": 120,
   "seed_base": 10000,
   "generator": "tests/test_fuzz.py::random_case",
-  "seconds": 100.37876159999996,
+  "seconds": 63.57938140000033,
   "counts": {
    "reference did not converge": 26,
    "we found a better optimum": 42,
@@ -51,7 +51,7 @@
   "cases": 400,
   "seed": 0,
   "generator": "bench/stress_sweep.py::make_case",
-  "seconds": 252.52357949999987,
+  "seconds": 173.91589420000037,
   "counts": {
    "same optimum": 167,
    "reference did not converge": 99,
@@ -95,11 +95,12 @@
  "quick": false,
  "suites": {
   "pytest": {
-   "returncode": 0,
-   "summary": "621 passed, 4 skipped, 2 warnings in 138.80s (0:02:18)",
-   "collected": 625,
-   "passed": 621,
-   "skipped": 4
+   "returncode": 1,
+   "summary": "2 failed, 676 passed, 15 skipped, 22 warnings in 103.67s (0:01:43)",
+   "collected": 693,
+   "failed": 2,
+   "passed": 676,
+   "skipped": 15
   },
   "cargo": {
    "returncode": 0,
