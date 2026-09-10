@@ -1,68 +1,66 @@
 <div align="center">
 
-<img src="docs/assets/logo.svg" alt="" width="96" height="96">
+<img src="https://raw.githubusercontent.com/Fatin-Ishraq/mixedlm-rs/main/docs/assets/logo.svg" alt="mixedlm-rs logo" width="96" height="96">
 
 # mixedlm-rs
 
-**`lmer` for Python.**
-Linear mixed-effects models with `lme4` speed, the `statsmodels` API, and no R required.
+**Fast linear mixed-effects models for Python, powered by Rust.**
 
+[![PyPI](https://img.shields.io/pypi/v/mixedlm-rs.svg)](https://pypi.org/project/mixedlm-rs/)
 [![CI](https://github.com/Fatin-Ishraq/mixedlm-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/Fatin-Ishraq/mixedlm-rs/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.10%20–%203.14-blue.svg)](https://github.com/Fatin-Ishraq/mixedlm-rs)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-beta-orange.svg)](docs/LIMITATIONS.md)
+[![Python](https://img.shields.io/badge/python-3.10%E2%80%933.14-blue.svg)](https://pypi.org/project/mixedlm-rs/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/LICENSE)
 
 </div>
 
-> **Beta — 0.1.0, first release.** The numerics are checked hard: the fits agree
-> with `lme4`'s published results to six decimals, and every claim in this
-> README is tied to a recorded experiment. What is *not* settled is the surface
-> area. This fits linear mixed models with **one grouping factor** — no crossed
-> or nested random effects, no variance components, no GLMMs — and it provides
-> no Kenward–Roger or Satterthwaite small-sample corrections. Read
-> [docs/LIMITATIONS.md](docs/LIMITATIONS.md) before depending on it for
-> published inference.
+`mixedlm-rs` fits Gaussian linear mixed-effects models using lme4's profiled
+ML/REML formulation and a compiled Rust core. It provides a statsmodels-style
+formula and array API, with no R installation required.
 
-## What this is for
+Use it for repeated measurements within subjects, patients within clinics, or
+other data with **one grouping factor**, including correlated random intercepts
+and slopes. The implementation is designed to make models with many groups
+fast while checking convergence explicitly.
 
-You measured the same subjects more than once. Or students inside classrooms,
-patients inside clinics, plots inside sites, trials inside people. The
-observations are not independent, and a plain regression will tell you things
-that are not true.
+**This is beta software.** It supports a subset of `statsmodels.MixedLM`;
+crossed effects, multiple levels of nesting and GLMMs are outside its scope.
+See [compatibility](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/docs/COMPATIBILITY.md)
+before migrating an existing analysis.
 
-**Mixed-effects models** are the standard answer, and they are the workhorse of
-experimental science — clinical trials, psychology, neuroscience, ecology,
-linguistics, education research, pharmacology.
-
-Python's implementation has been the weak link. This is a drop-in replacement
-for it.
-
-**Not on PyPI yet.** Build it from a checkout — you need a Rust toolchain:
+## Install
 
 ```bash
-git clone https://github.com/Fatin-Ishraq/mixedlm-rs
-cd mixedlm-rs
-pip install maturin && maturin build --release --out dist
-pip install --find-links dist mixedlm-rs
+python -m pip install mixedlm-rs
 ```
 
-The build is `abi3`, so one wheel per platform will cover Python 3.10–3.14 once
-these are published, and there will be nothing to compile.
+Python 3.10 or later is required. NumPy, SciPy, pandas and Patsy are installed
+as dependencies. Neither statsmodels nor R is needed for normal use.
 
-**Currently verified:** the full suite runs in CI on Linux, macOS and Windows
-against Python 3.10 through 3.14, plus the exact declared dependency floors on
-3.10 and the minimum supported Rust version. Every wheel this project publishes
-is installed into a clean environment *outside* the source tree and used to fit
-a model there, on a runner of its own architecture — including Intel macOS and
-ARM64 Linux, which the ordinary matrix does not cover. A wheel rebuilt from the
-unpacked sdist gets the same treatment. The CI badge above is the live answer
-for the current commit.
+Binary wheels are available on [PyPI](https://pypi.org/project/mixedlm-rs/#files):
 
-Not verified: any platform CI does not run — 32-bit, musl, and any
-architecture outside the five wheels listed above.
+| Platform | Architectures |
+|---|---|
+| Windows | x86-64 |
+| macOS | Intel x86-64, Apple Silicon ARM64 |
+| Linux, glibc 2.17+ | x86-64, ARM64 |
 
-Runs as-is after `pip install` — no data file to fetch. Eighteen subjects,
-each measured over ten days, each with their own intercept and slope:
+The wheels use Python's stable ABI (`cp310-abi3`). On a matching platform,
+installation needs no Rust compiler. Building from source requires Rust 1.83+
+and a compatible native build toolchain; pip installs the Maturin build backend.
+There are no published wheels for 32-bit systems or musl-based Linux.
+
+**Currently verified:** the project's CI matrix covers Python 3.10–3.14 on
+Windows, macOS and Linux, with separate checks for the declared dependency
+floors and minimum Rust version. Release checks install each platform's wheel
+outside the source tree and test a wheel rebuilt from the source archive.
+See the [CI runs](https://github.com/Fatin-Ishraq/mixedlm-rs/actions/workflows/ci.yml)
+for the status of a particular commit. Python versions beyond 3.14 are not yet
+part of that test matrix.
+
+## Quick start
+
+This example simulates 18 subjects measured on 10 days. Each subject has their
+own baseline and rate of change. It runs after installation, with **no data file to fetch**.
 
 <!-- readme-example -->
 ```python
@@ -71,429 +69,291 @@ import pandas as pd
 import mixedlm_rs as mlm
 
 rng = np.random.default_rng(0)
-subjects, days = 18, 10
-subject = np.repeat(np.arange(subjects), days)
-day = np.tile(np.arange(days), subjects)
+n_subjects, n_days = 18, 10
+subject = np.repeat(np.arange(n_subjects), n_days)
+day = np.tile(np.arange(n_days), n_subjects)
 
-# Each subject gets their own baseline and their own rate of change.
-intercept = rng.normal(250, 25, subjects)[subject]
-slope = rng.normal(10, 6, subjects)[subject]
-reaction = intercept + slope * day + rng.normal(0, 25, subjects * days)
+intercept = rng.normal(250, 25, n_subjects)[subject]
+slope = rng.normal(10, 6, n_subjects)[subject]
+reaction = intercept + slope * day + rng.normal(0, 25, subject.size)
+data = pd.DataFrame({"reaction": reaction, "day": day, "subject": subject})
 
-sleep = pd.DataFrame({"Reaction": reaction, "Days": day, "Subject": subject})
+model = mlm.mixedlm(
+    "reaction ~ day",
+    data,
+    groups="subject",
+    re_formula="~day",
+)
+result = model.fit()  # REML by default
 
-model = mlm.mixedlm("Reaction ~ Days", sleep,
-                    groups=sleep["Subject"],   # each subject measured 10 times
-                    re_formula="~Days")        # and each has their own slope
-result = model.fit()
 print(result.summary())
-
-print(f"\nfixed effects: {result.fe_params}")
+print(f"fixed effects: {result.fe_params}")
 print(f"converged: {result.converged}")
+print(f"singular: {result.singular}")
 ```
 <!-- /readme-example -->
 
-The same model on `lme4`'s **`sleepstudy`** — the dataset this example imitates
-— reproduces `lme4`'s published fit to six decimals. That CSV is GPL-2 and is
-not shipped with the package (see [data/README.md](data/README.md)); with a copy
-in hand it is `pd.read_csv("sleepstudy.csv")` in place of the frame above, and
-the fit is the one shown below.
+`reaction ~ day` specifies the fixed effects. `groups="subject"` identifies
+independent clusters; `re_formula="~day"` gives each subject a random intercept
+and slope, with their covariance estimated. Omit `re_formula` for a random
+intercept only. Group sizes do not have to be equal.
 
+To use maximum likelihood instead, call `.fit(reml=False)` on a new model.
+Use ML when comparing likelihoods of models with different fixed-effect
+specifications fitted to the same observations; their REML criteria are not
+directly comparable.
 
-```
-                    Mixed Linear Model Regression Results
-==============================================================================
-Model:                MixedLM           Dependent Variable:           Reaction
-No. Observations:     180               Method:                           REML
-No. Groups:           18                Scale:                        654.9410
-Min. group size:      10                Log-Likelihood:              -871.8141
-Max. group size:      10                Converged:                         Yes
-Mean group size:      10.0              Singular fit:                       No
-------------------------------------------------------------------------------
-                         Coef.  Std.Err.        z    P>|z|    [0.025    0.975]
-------------------------------------------------------------------------------
-Intercept              251.405     6.825   36.838    0.000   238.029   264.781
-Days                    10.467     1.546    6.771    0.000     7.438    13.497
-Group Var              612.090    11.881
-Group x Days Cov         9.604     1.821
-Days Var                35.072     0.610
-==============================================================================
-```
+### Inspect estimates and predict
 
-`lme4` reports this fit as `sd(Intercept) = 24.741`, `sd(Days) = 5.922`,
-`corr = 0.066`, `sd(Residual) = 25.592`, REML criterion `1743.6284`. Squaring
-those standard deviations gives 612.12 and 35.07, and the criterion is
-`-2 x -871.8141 = 1743.6282`. The variance rows are printed on the same scale
-statsmodels prints them, so the two summaries are directly comparable.
-
-## Already using statsmodels?
-
-For most code, changing the import is the whole migration.
-
-```diff
-- from statsmodels.regression.mixed_linear_model import MixedLM
-+ from mixedlm_rs import MixedLM
-```
-
-Same classes, same `params` packing, same `summary()` layout. The
-arguments match too, with the exceptions catalogued in
-[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md): a few statsmodels
-arguments are accepted and warned about rather than honoured, and some
-attributes are plain arrays where statsmodels returns a DataFrame.
-
-**Three things decide whether that holds for you**, and it is worth two minutes
-to check rather than finding out later:
-
-1. **One grouping factor.** Crossed or nested random effects — two `(...|...)`
-   terms — are not supported and raise. This is the biggest gap in the package.
-2. **Result containers are ndarrays, not Series.** `result.fe_params["x"]`
-   raises; `result.fe_params[1]` works. Use `params_labelled` or
-   `param_names` for name-based access.
-3. **Some methods are absent**, including `summary().tables` / `.as_html()`,
-   `wald_test_terms`, `t_test_pairwise` and the `bsejac` family.
-
-Everything else — every attribute, every type difference, every method that
-raises and why — is enumerated in
-**[the compatibility contract](docs/COMPATIBILITY.md)**, which was produced by
-diffing the two results objects rather than from memory.
-
-If you cannot edit the code that imports it — someone else's library, a notebook
-you were handed:
+Continuing the example:
 
 ```python
-import mixedlm_rs
-mixedlm_rs.install()      # before anything imports statsmodels' MixedLM
+print(result.fe_params_labelled)  # Fixed effects as a named pandas Series
+print(result.bse_fe)             # Fixed-effect standard errors
+print(result.cov_re)             # Random-effect covariance matrix
+print(result.scale)              # Residual variance
+print(result.diagnostics)        # Optimizer and numerical diagnostics
 
-import statsmodels.api as sm       # sm.MixedLM is now ours
-import statsmodels.formula.api as smf   # smf.mixedlm is now ours
+new_data = pd.DataFrame({"day": [0, 5, 10]})
+print(result.predict(new_data))
 ```
 
-`install()` aliases **only** the mixed-model entry points. statsmodels does far
-more than mixed models, and the rest of it is left untouched.
+`predict()` returns the **population-level, fixed-effects prediction**. It does
+not add fitted subject effects, so this example needs no subject column.
+`result.fittedvalues` includes the fitted random effects for the training
+observations. `result.random_effects` contains the estimated effects by group.
 
-## It is not just faster. It is more often right.
+The main numerical attributes, including `fe_params` and `cov_re`, are NumPy
+arrays even for formula fits. Use `fe_params_labelled` or `params_labelled`
+when you need names.
 
-This is the part that matters more than the speed.
+### Use arrays directly
 
-`statsmodels.MixedLM` does not merely take a long time — on ordinary inputs it
-**fails to converge and returns estimates anyway**, after retrying `bfgs`, then
-`lbfgs`, then `cg`, and giving up with a gradient norm in the hundreds.
+The equivalent model can be constructed without a formula:
 
-When that happens, a researcher either does not notice, or starts deleting
-random-effects terms until the fit converges. That second response is a
-documented source of anti-conservative *p*-values — the "keep it maximal"
-literature in psycholinguistics exists because of exactly this.
+```python
+X = np.column_stack([np.ones(len(data)), data["day"].to_numpy()])
+array_result = mlm.MixedLM(
+    endog=data["reaction"].to_numpy(),
+    exog=X,
+    groups=data["subject"].to_numpy(),
+    exog_re=X,
+).fit()
+```
 
-Across **120 randomised fixtures**, comparing against `statsmodels`:
+Include an intercept column explicitly in array inputs when the model needs
+one. `exog` defines fixed effects; `exog_re` defines random effects within each
+group.
 
-| outcome | count |
+### Save and load a fit
+
+```python
+result.save("fit.pkl")
+restored = mlm.MixedLMResults.load("fit.pkl")
+print(restored.predict(new_data))
+```
+
+The default save retains the training data needed to rebuild supported formula
+designs. Only load files you trust: this uses Python pickle. Custom formula
+functions and reduced-data saves have additional
+[persistence limitations](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/docs/LIMITATIONS.md).
+
+## Moving from statsmodels
+
+For a supported model, start by changing the formula API import:
+
+```diff
+- import statsmodels.formula.api as smf
++ import mixedlm_rs as smf
+```
+
+The `mixedlm(...)`, `MixedLM(...)` and `MixedLM.from_formula(...)` entry points
+follow familiar statsmodels conventions. Existing code still needs review:
+some return types differ, optimizer arguments do not select the same
+algorithms, and several methods are unimplemented. The
+[compatibility guide](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/docs/COMPATIBILITY.md)
+lists the supported contract, warnings and exceptions.
+
+## Convergence and inference
+
+Inspect both `result.converged` and `result.singular`:
+
+| Attribute | Meaning |
+|---|---|
+| `converged` | The fit passed the implementation's numerical convergence checks. |
+| `singular` | The estimated random-effect covariance is at or near a singular boundary. |
+
+A singular fit can be a valid converged optimum, for example when a random
+intercept variance is zero. Conversely, returning estimates does not establish
+convergence. This package can also return `converged=False` with a warning.
+
+The optimizer checks local stationarity and probes away from boundary
+solutions. These checks do **not** prove that it found a global optimum or that
+the model is identifiable. Examine warnings and `result.diagnostics` before
+using an uncertain fit.
+
+Reported fixed-effect tests use normal/Wald inference. There are no
+Satterthwaite or Kenward–Roger small-sample corrections. Fixed-effect covariance
+is conditional on the fitted variance parameters; joint covariance across
+fixed and variance parameters is not available. Wald intervals for variance
+parameters are especially unreliable near zero.
+
+## Numerical validation
+
+The primary reference is **lme4**, with checks against published fits and
+recorded R results for `sleepstudy`, `Dyestuff` and `Dyestuff2`, under ML and
+REML. These cover correlated random slopes and a zero-variance boundary fit.
+The reference datasets are GPL-2 test fixtures kept in the Git repository;
+they are **not shipped** in the wheels or source archive. See
+[dataset provenance](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/data/README.md).
+
+Agreement is assessed at the precision and tolerances of the recorded
+references. Additional tests compare against statsmodels, check derivatives
+with finite differences, and probe the objective independently of the analytic
+gradient. A convergence warning from another package alone does not establish
+that its estimates are wrong.
+
+The recorded comparison on **120 randomised fixtures** reports:
+
+| Outcome | Count |
 |---|---:|
 | statsmodels did not converge | **26** |
 | mixedlm-rs found a strictly **better** optimum | **42** |
 | same optimum | 52 |
 | mixedlm-rs found a **worse** optimum | **0** |
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/outcomes-dark.svg">
-  <img src="docs/assets/outcomes-light.svg"
-       alt="The same 120 fixtures as one bar: 42 better optimum, 52 same optimum, 26 statsmodels did not converge, 0 worse."
-       width="100%">
-</picture>
+“Better” and “worse” refer to the fitted likelihood criterion on the same
+model and data, using the experiment's absolute deviance tolerance. They do
+not mean better prediction or establish which model is scientifically appropriate.
 
-On 56.7% of fixtures the reference either failed or landed somewhere worse.
-Reproduce the counts with `python bench/differential_table.py`.
+A separate **400-case adversarial sweep** recorded 99 statsmodels
+nonconvergences, 131 better optima for mixedlm-rs, 167 ties and **3 worse
+optima**. Those losses have absolute deviance gaps of approximately
+`2.74e-6` to `5.71e-5`. One case also failed the sweep's independent stationarity
+check. These are finite test suites, not estimates of failure rates in general use.
 
-These are deliberately difficult fixtures — that is what they are for — so the
-rate is not an estimate of how often statsmodels fails on ordinary published
-datasets, and should not be read as one.
+Both experiments are recorded in
+[`bench/baseline.json`](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/bench/baseline.json)
+at commit `0345e45`. The
+[correctness report](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/docs/CORRECTNESS.md)
+provides the reference fits, thresholds, generators and known difficult cases.
 
-Singular fits — a variance component genuinely at zero — are reported as
-converged, because a boundary optimum **is** a converged fit. That is what stops
-people from mangling their model to silence a warning. They are also flagged
-*separately*, as `results.singular`, because the estimate being legitimate does
-not make the usual Wald intervals around it legitimate: at the boundary the
-sampling distribution of a variance parameter is degenerate, and `bse_re`
-returns `NaN` there rather than a number that would be read as a standard error.
-`lme4` draws the same distinction with `isSingular`.
+## Performance
 
-**Convergence is certified, not reported.** The optimiser's own success flag is
-never taken as the answer: it says its termination rule fired, not that the
-point is stationary. The projected gradient is checked against a tolerance that
-does not depend on the units, and a failed check triggers a restart rather than
-a warning.
+The recorded benchmark below uses synthetic data with a random intercept and
+slope, fitted through each package's formula API on the same machine. Timings
+include model construction and fitting; they exclude data generation and
+printing a summary.
 
-## Speed
+| Observations | Groups | statsmodels | mixedlm-rs | Speedup |
+|---:|---:|---:|---:|---:|
+| 2,000 | 100 | 0.325 s | 0.0082 s | 40x |
+| 10,000 | 500 | 1.655 s | 0.0091 s | 183x |
+| 20,000 | 1,000 | 2.543 s | 0.0111 s | 229x |
+| 40,000 | 5,000 | 11.019 s | 0.0167 s | 661x |
+| 100,000 | 20,000 | 41.873 s | 0.0384 s | 1092x |
+| 200,000 | 50,000 | 102.791 s | 0.0732 s | 1404x |
+| 500,264 | 125,066 | Not measured | 0.218 s | — |
 
-| n | groups | statsmodels | mixedlm-rs | |
-|---:|---:|---:|---:|---|
-| 10,000 | 500 | 1.65 s | **0.009 s** | 183x |
-| 40,000 | 5,000 | 11.02 s | **0.017 s** | 661x |
-| 100,000 | 20,000 | 41.87 s | **0.038 s** | 1092x |
-| 200,000 | 50,000 | 102.79 s | **0.073 s** | 1404x |
-| 500,264 | **125,066** | — | **0.218 s** | |
+**Measurement conditions:** Windows 11, AMD Ryzen 5 5600G, 12 logical CPUs,
+Python 3.14.3 and statsmodels 0.15.0. mixedlm-rs reports the minimum of three
+runs. statsmodels also uses three runs through 40,000 observations, but only
+**one run** for the 100,000- and 200,000-observation cases. Thread counts were
+not pinned: Rayon used the available logical CPUs, and OMP/OpenBLAS thread
+settings were unset. These are wall-clock comparisons with those defaults,
+not comparisons at a fixed CPU budget. Speedups use unrounded timings.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/scaling-dark.svg">
-  <img src="docs/assets/scaling-light.svg"
-       alt="Fit time against grouping factor levels, log-log. statsmodels rises from 0.3 to 103 seconds; mixedlm-rs stays between 0.008 and 0.073 seconds."
-       width="100%">
-</picture>
+Both fits reported convergence in every timed comparison, and their estimates
+and likelihoods passed the benchmark's agreement checks. The workload favors
+many small groups; speedups depend on model shape, data, dependencies and
+hardware, and should not be assumed for every analysis.
 
-Re-measured on 2026-09-10 for this release; earlier revisions of this table
-published **higher** speedups (218x / 870x / 1454x / 1836x) that no longer
-reproduce. Running the original `bench/scaling.py` on the same machine today
-gives 161x / 598x / 1078x / 1370x, and the recorded run above gives 183x / 661x
-/ 1092x / 1404x — the two agree within 12%, and both disagree with what was
-published. statsmodels is simply faster now than when those figures were taken;
-what changed between the two recordings is not established, so the old numbers
-are treated as superseded rather than explained.
+The measurements were recorded on 2026-09-10 at commit `b34a88a`.
+[`bench/performance.json`](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/bench/performance.json)
+contains all repetitions, dependency versions, thread settings and the
+extension hash. Reproduce the comparison with
+[`bench/performance.py`](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/bench/performance.py).
 
-Agreement is **enforced**, not reported: the benchmark aborts rather than print
-a timing if the fixed effects differ by more than 0.05 of a standard error, the
-variance components by more than 2%, or our criterion falls below the
-reference's. On every row above it does not — the largest fixed-effect
-difference is 3.8e-05 standard errors, and our log-likelihood is never lower.
+The largest case uses a group count motivated by
+[statsmodels issue #9097](https://github.com/statsmodels/statsmodels/issues/9097).
+Its reported 41-minute timing is not a measurement made here. Our synthetic
+case is not a reproduction of their dataset and should not be read as a measured
+speedup over that report.
 
-That last row matches the *size* reported in
-[statsmodels#9097](https://github.com/statsmodels/statsmodels/issues/9097) —
-125,066 groups — where a user reported waiting **41 minutes** for a fit that R's
-`lmer` did in 1–2 seconds. To be clear about what that is and is not: the 41
-minutes is their report on their own data, not a measurement made here. This
-row is synthetic data at the same group count, so it shows that the size is not
-the obstacle. It is not a reproduction of their categorical-design dataset, and
-should not be read as a measured 41-minutes-to-0.18-seconds result.
+Historical R/lme4 and pymer4 timings are presented separately in the
+[benchmark report](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/docs/BENCHMARKS.md).
+They were not rerun for this measurement. The pymer4 path also performs
+lmerTest inference and result extraction, so its elapsed time covers different
+work from a bare model fit.
 
-### Faster than lme4 itself
+## How it works
 
-`statsmodels` is what this replaces, but `lme4` in R is the strongest
-implementation in the market, and `pymer4` — which calls `lme4` through rpy2 —
-is the only way a Python user gets genuine `lme4` results today. Same models,
-byte-identical data:
+The Rust core evaluates a profiled ML/REML criterion using penalised least
+squares. With one grouping factor, the random-effect system separates into
+small per-group blocks. The implementation precomputes group statistics,
+factorises those blocks in Rust, and uses Rayon for parallel work.
 
-| n | groups | mixedlm-rs | lme4 (R) | pymer4 | vs lme4 | vs pymer4 |
-|---:|---:|---:|---:|---:|---:|---:|
-| 10,000 | 500 | **0.010 s** | 0.080 s | 1.71 s | 8x | 166x |
-| 40,000 | 5,000 | **0.017 s** | 0.330 s | 11.67 s | 19x | 683x |
-| 100,000 | 20,000 | **0.038 s** | 1.120 s | 118.10 s | 30x | 3,127x |
-| 200,000 | 50,000 | **0.078 s** | 2.510 s | 747.28 s | 32x | 9,554x |
-| 500,264 | **125,066** | **0.169 s** | 7.330 s | — | **43x** | — |
+An analytic gradient reuses the factorisation work. The default optimizer is
+SciPy's L-BFGS-B, calling the Rust objective and gradient. In the recorded
+implementation-stage comparison, replacing this project's finite differences
+with its analytic gradient reduced objective evaluations from **44–64** to
+**11–13**. That is a comparison between stages of this implementation, not a
+claim that analytic gradients are new or that statsmodels lacks them.
 
-Every figure in these tables is recorded in `bench/performance.json` with the
-commit, machine, repetition count and thread settings that produced it; the
-`lme4` and `pymer4` columns are **historical**, from a machine with R, and were
-not re-measured on this build. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+See the [design and gradient derivation](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/docs/DESIGN.md)
+for the equations, implementation details and validation.
 
-**The log-likelihood matches `lme4` to six decimals on every fixture.** Same
-answer, 8–43x faster, and the margin widens with the group count.
+## Scope and limitations
 
-`pymer4` *is* `lme4`, so the gap between those two columns is what a Python
-caller pays on top of the fit — and it compounds: 21x at 10,000 rows, **298x at
-200,000**, where 2.51 s of the 747.28 s is the `lmer` fit. The remaining 744.77 s
-is *not* a measurement of marshalling alone: `pymer4` also runs lmerTest for
-Satterthwaite degrees of freedom and extracts the results as R objects, and the
-benchmark does not separate those from serialisation. It also still needs R,
-Rtools and a writable R library wherever your code runs.
-[Full tables and caveats →](docs/BENCHMARKS.md)
-
-**Where the win comes from — honestly.** The largest single factor is
-structural, not the language:
-
-| step | multiplier |
-|---|---:|
-| profiled REML — *upper bound only* | 1.7x |
-| + batched block-diagonal Cholesky | **30.8x** |
-| + Rust core | 14.6x |
-| + analytic gradient | 2.8x |
-| **end to end, like for like** | **182x** |
-
-That last row compares the public API against `statsmodels` on the same
-DataFrame, both parsing a formula, fitting, and computing inference. An earlier
-version of this table published **1844x** for the same row, which was not a
-like-for-like comparison: it measured the bare Rust objective against
-statsmodels doing all of that extra work. [What was wrong, in
-detail →](docs/BENCHMARKS.md)
-
-The formulation is `lme4`'s: eliminate the fixed effects and `sigma^2`
-analytically so the optimiser sees only the 1–3 covariance parameters, and
-factorise the block-diagonal penalised system instead of applying a dense
-Sherman-Morrison-Woodbury update per group per iteration. Stages 1 and 2 are
-reproducible by anyone in NumPy — `proto/preml.py` is that implementation, in
-about 200 lines. [Full tables →](docs/BENCHMARKS.md)
-
-## The optimiser uses a gradient; lme4's does not
-
-`lme4` and `MixedModels.jl` both optimise the covariance parameters
-**derivative-free** (BOBYQA). Here the analytic gradient of the profiled REML
-criterion is evaluated alongside the criterion itself and handed to L-BFGS-B,
-which cuts objective evaluations from 44–64 to 11–13 on the benchmark
-fixtures.
-
-Two caveats worth stating plainly. The gradient of the profiled criterion is
-not new — Bates et al. derive the ML version in the lme4 paper (eq. 46–48), and
-`MixedModels.jl` documents derivative support; what is here is a REML gradient
-specialised to the block structure, computed in the passes that already produce
-the criterion. And the 44–64 figure is *this* package's own finite-difference
-stage, not BOBYQA: no claim is made about lme4's evaluation count, which was
-not measured.
-
-Because a wrong gradient does not crash — it converges quietly to the wrong
-answer — it is checked against central finite differences over the full product
-of random-effect count, fixed-effect count and criterion, and at the
-variance-zero boundary. [The derivation →](docs/DESIGN.md)
-
-## What is included
-
-| | |
+| Area | Current boundary |
 |---|---|
-| **Models** | `MixedLM`, `MixedLM.from_formula`, `mixedlm` |
-| **Results** | `fe_params`, `cov_re`, `cov_re_unscaled`, `scale`, `params`, `bse`, `bse_fe`, `bse_re`, `bse_cov_re`, `tvalues`, `pvalues`, `llf`, `aic`, `bic`, `df_resid`, `random_effects`, `random_effects_cov`, `fittedvalues`, `resid`, `conf_int`, `cov_params`, `predict`, `summary`, `converged`, `singular` |
-| **Tests** | `t_test`, `wald_test`, `f_test` (fixed effects) |
-| **Persistence** | pickling, `save` / `load` |
-| **Parameters** | `MixedLMParams` with `from_packed` / `get_packed` / `from_components` |
-| **Criteria** | REML (default) and ML |
-| **Aliasing** | `install()` / `uninstall()` |
+| Grouping | One grouping factor. No crossed subject/item effects or separate effects at multiple nesting levels. |
+| Model family | Gaussian linear mixed models only; no binomial or Poisson GLMMs. |
+| Covariance structures | No variance-component formulas, `free` masks or covariance penalties. |
+| Additional fitting methods | No `fit_regularized`, `profile_re`, `bootstrap` or `get_distribution`. |
+| Fixed-effect design | Rank-deficient or numerically rank-deficient designs are rejected; redundant columns are not dropped automatically. |
+| Inference | Normal/Wald inference, with the limitations described above. |
+| Optimization | Local convergence checks; no guarantee of a global optimum. `method="rust"` is experimental. |
 
-**Scoped to one grouping factor.** Crossed and nested random effects
-(`vc_formula`) break the block-diagonal structure this is built on and need a
-sparse Cholesky with a fill-reducing ordering — that is the next release. They
-raise `NotImplementedError` rather than silently fitting a different model, as
-do `fe_pen`, `cov_pen` and `free`. GLMMs are out of scope.
-[Every gap, stated plainly →](docs/LIMITATIONS.md)
+These restrictions matter for designs such as crossed participant/item
+experiments or students within classrooms within schools. Combining IDs into
+one grouping variable does not reproduce separate random effects at each level.
+Read the full [limitations](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/docs/LIMITATIONS.md)
+and [API compatibility guide](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/docs/COMPATIBILITY.md)
+for argument handling, result types, numerical edge cases and persistence.
 
-## Is it actually the same?
+## Development
 
-That is the only question that matters for a drop-in, so it is what the test
-suite is built around — **696 Python tests and 7 Rust tests**, with
-`statsmodels`, `mypy` and the lme4 fixtures installed. Fewer are collected
-without them: the differential comparisons skip at import, so a minimal
-environment collects 398 rather than skipping 178.
-
-The primary oracle is **lme4's published fits**, not statsmodels, because
-statsmodels is the thing that is wrong on some inputs. `sleepstudy`, `Dyestuff`
-and the singular `Dyestuff2` are reproduced to every published digit, under both
-REML and ML.
-
-A further 400-case adversarial sweep — tiny groups, extreme imbalance,
-predictors spanning six orders of magnitude, near-collinear fixed effects,
-heavy outliers — raised **zero exceptions**, and found a better optimum than
-statsmodels 131 times against **3 losses**. Those three are near-ties, worse by
-2.7e-06, 5.6e-05 and 5.7e-05 in deviance on a criterion whose own scale is in
-the hundreds, and they are reported as losses rather than explained away. One
-case of 400 could not be certified as a stationary point, and says so. The sweep is committed as `bench/stress_sweep.py`, so the classification
-can be checked.
-
-Testing found real defects, and they are listed rather than quietly fixed.
-Differential testing against statsmodels found four during development:
-
-- **`fittedvalues` returned the marginal fit.** statsmodels' is the *conditional*
-  fit, including the random effects.
-- **`theta = 0` is a stationary point for any data whatsoever.** At `Lambda = 0`
-  every term of the gradient vanishes identically, so a gradient-based optimiser
-  that reaches the bound stops there and reports success — even when the true
-  optimum is an ordinary non-zero variance. Fixed by probing away from the bound
-  and restarting.
-- **That probe ladder was then too coarse.** Its smallest step was 0.05, so a
-  true optimum at `theta = 0.028` was still missed — every probe overshot it.
-- **Unidentifiable models were fitted silently.** Now detected — though the
-  original reasoning for the check was itself wrong, and the correction is
-  below.
-
-An external review then found several more, which are fixed and documented:
-
-- **Catastrophic cancellation in the residual sum of squares.** The criterion
-  was computed as `y'y - beta'X'y - u'Lambda'Z'y`, a difference of large nearly
-  equal quantities. With a response around 1e8 — prices in minor units, epoch
-  timestamps, populations — the fit returned a confidently converged wrong
-  answer. The response is now offset by its OLS fit before any cross-product is
-  formed, which makes results invariant to response translation.
-- **Convergence was `optimiser_flag or stationary`.** A loose tolerance let the
-  optimiser's own success flag overrule the gradient check, reporting success
-  at a projected gradient of 19. Stationarity is now the only test, and it
-  drives a retry rather than just annotating the answer.
-- **`summary()` printed the wrong quantity.** It labelled `cov_re_unscaled` as
-  "Group Var" — 0.935 on `sleepstudy` where both lme4 and statsmodels report
-  612.1.
-- **`random_effects_cov` returned the population covariance** for every group,
-  where the conditional covariance given that group's data was asked for.
-- **Malformed input to the compiled core killed the process.** An empty or
-  oversized `theta` reached unchecked indexing, and `panic="abort"` turned that
-  into a process abort rather than a catchable error.
-- **The identifiability rule was wrong in both directions.** `n <= q*m` neither
-  implies a divergent likelihood nor catches a confounded single group. The
-  check now measures whether the criterion is flat instead of counting.
-
-[What is verified, and every divergence →](docs/CORRECTNESS.md)
-
-## Building from source
-
-Needs a Rust toolchain — **1.83 or newer**, which is what the locked
-dependencies require and what CI builds with.
+Building a checkout requires Rust 1.83+ and Python 3.10+. Use a virtual
+environment, then install the package and test tools:
 
 ```bash
-pip install maturin
-python -m maturin build --release --out dist
-pip install --force-reinstall --no-deps --no-index --find-links dist mixedlm-rs
+git clone https://github.com/Fatin-Ishraq/mixedlm-rs.git
+cd mixedlm-rs
+python -m pip install ".[test,lint]"
+python -m pytest tests/ -q
+cargo test --lib --locked
+python -m ruff check .
 ```
 
-### Development
+The Git checkout includes the numerical reference fixtures and benchmark
+scripts omitted from published distributions. CI also runs type checking,
+Rust linting, dependency-floor checks and artifact validation.
 
-```bash
-pip install maturin pytest ruff mypy numpy scipy pandas patsy statsmodels
-python -m maturin build --release --out dist
-pip install --force-reinstall --no-deps --no-index --find-links dist mixedlm-rs
+For bug reports, include a minimal example, package and dependency versions,
+platform, warnings and `result.diagnostics` when a fit is available. Use
+[GitHub issues](https://github.com/Fatin-Ishraq/mixedlm-rs/issues).
+See the [changelog](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/CHANGELOG.md)
+for release history.
 
-pytest tests/ -q          # the suite
-cargo test --lib          # the linear algebra and the optimiser
-ruff check .              # rules pinned in pyproject.toml
-mypy                      # configured in pyproject.toml
-cargo clippy --all-targets -- -D warnings
-cargo audit               # Rust advisories
-python -m pip_audit --requirement requirements-runtime.txt
-```
+## License and acknowledgements
 
-Benchmarks and the recorded numerical baseline:
+mixedlm-rs is [MIT licensed](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/LICENSE).
+Bundled dependencies retain their own licenses; see
+[third-party notices](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/THIRD-PARTY-NOTICES.md)
+and [license texts](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/THIRD-PARTY-LICENSES.md).
 
-```bash
-python bench/scaling.py            # scaling against statsmodels
-python bench/stages.py             # where the speed comes from
-python bench/stress_sweep.py       # 400 adversarial cases
-python bench/baseline.py           # re-record bench/baseline.json
-```
-
-Every benchmark refuses to print a timing unless the fits agree; the
-tolerances and the reasoning behind each are in `bench/tolerances.py`. The
-counts quoted in the documentation come from `bench/baseline.json` and are
-checked against it by `tests/test_baseline.py`, so a stale table fails the
-suite.
-
-## Support
-
-Only the latest release is supported; before 1.0 there are no backports. See
-[SECURITY.md](SECURITY.md) for the reporting process and the dependency-audit
-policy, and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for what is
-linked, what is depended on, and what is deliberately not distributed.
-
-- **Issues and questions:** <https://github.com/Fatin-Ishraq/mixedlm-rs/issues>
-- **Changelog:** [CHANGELOG.md](CHANGELOG.md)
-- **Migration contract:** [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)
-- **Known gaps:** [docs/LIMITATIONS.md](docs/LIMITATIONS.md)
-
-## Licence and credit
-
-MIT.
-
-The algorithm is Douglas Bates and colleagues'. This package implements the
-formulation published in:
-
-> Bates, D., Mächler, M., Bolker, B., & Walker, S. (2015). *Fitting Linear
-> Mixed-Effects Models Using lme4.* Journal of Statistical Software, 67(1),
-> 1–48.
-
-The API mirrors `statsmodels` (BSD-3), by the statsmodels developers.
-
-The `lme4` datasets used to verify correctness (`sleepstudy`, `Dyestuff`,
-`Dyestuff2` and others) are GPL-2 and live in `data/` as **test fixtures only**.
-They are excluded from both distributed artifacts — neither the wheel nor the
-source archive contains them, so nothing GPL-2 is redistributed under this
-project's MIT licence. They are present in the git repository, and the tests
-that use them skip when they are absent. See [data/README.md](data/README.md).
+The statistical formulation follows lme4 and the work of Bates, Mächler,
+Bolker and Walker, *Fitting Linear Mixed-Effects Models Using lme4* (2015).
+The Python API follows statsmodels. This is an independent implementation;
+neither upstream project maintains or endorses it.

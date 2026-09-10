@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "mixedlm-rs"
-version = "0.1.0"
+version = "0.1.1"
 description = "Fast linear mixed-effects models for Python - lme4 speed, statsmodels API, no R required"
 readme = "README.md"
 requires-python = ">=3.10"

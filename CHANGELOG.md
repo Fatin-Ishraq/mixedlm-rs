@@ -1,6 +1,18 @@
 # Changelog
 
-## 0.1.0 — unreleased
+## 0.1.1 — 2026-09-10
+
+Documentation release; the fitting algorithms and numerical API are unchanged.
+
+- Rewrite the README with PyPI installation instructions and executable
+  formula, array, prediction and persistence examples.
+- Clarify supported model structures, statsmodels compatibility, convergence
+  diagnostics and inference limitations.
+- Attribute numerical and performance evidence to its recorded experiments,
+  including repetition counts, thread settings and difficult cases.
+- Check that Python, compiled-extension and installed-metadata versions agree.
+
+## 0.1.0 — 2026-09-10
 
 First release. Linear mixed-effects models with one grouping factor, matching
 `statsmodels.MixedLM`'s API.

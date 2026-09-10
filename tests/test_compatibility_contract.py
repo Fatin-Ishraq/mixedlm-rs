@@ -205,5 +205,10 @@ def test_aic_and_bic_are_nan_under_reml_as_in_the_reference():
 
 
 def test_version_reports_this_package_not_statsmodels():
-    assert mlm.__version__ == "0.1.0"
+    from importlib.metadata import version
+
+    from mixedlm_rs import _mixedlm_rs
+
+    assert mlm.__version__ == version("mixedlm-rs")
+    assert mlm.__version__ == _mixedlm_rs.__version__
     assert hasattr(mlm, "__statsmodels_version__")

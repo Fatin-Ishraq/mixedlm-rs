@@ -18,7 +18,7 @@ from .mixed_linear_model import (
     mixedlm,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __statsmodels_version__ = "0.15.0"
 
 __all__ = [
