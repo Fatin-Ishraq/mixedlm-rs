@@ -67,15 +67,25 @@ def test_the_baseline_was_recorded_on_a_clean_tree(baseline):
 # re-recording rather than by thinking. pyproject.toml is included only through
 # the sections that reach the build -- dependencies, build-system, tool.maturin
 # -- not tool.ruff or tool.mypy.
-# bench/ is included because the generators decide which cases are run: a
-# change to differential.py or stress_sweep.py changes the numbers without
-# touching a line of the package.
-NUMERIC_PATHS = ("src", "python", "Cargo.toml", "Cargo.lock", "bench")
-# Individual files outside those directories that are still inputs to the
-# recorded numbers. tests/test_fuzz.py supplies the differential comparison's
-# fixtures: change how a case is generated and the counts change, with nothing
-# under bench/ or python/ touched.
-NUMERIC_FILES = ("tests/test_fuzz.py",)
+NUMERIC_PATHS = ("src", "python", "Cargo.toml", "Cargo.lock")
+# The generators, named individually rather than by watching all of bench/.
+# baseline.json records where its cases come from -- `tests/test_fuzz.py::
+# random_case` and `bench/stress_sweep.py::make_case` -- and those two files
+# plus the recorder are the only things under bench/ or tests/ that can move a
+# recorded count.
+#
+# Watching the whole of bench/ was the same over-broad rule this file already
+# rejects for pyproject.toml, and it behaved the same way: adding a *chart
+# renderer* invalidated a numerical baseline it cannot influence, three times,
+# each costing a full re-record. A gate that fires on unrelated files gets
+# silenced by re-recording rather than by thinking.
+NUMERIC_FILES = (
+    "tests/test_fuzz.py",          # differential fixtures
+    "bench/stress_sweep.py",       # stress fixtures and classification
+    "bench/baseline.py",           # the recorder itself
+    "bench/tolerances.py",         # the thresholds outcomes are judged against
+    "bench/differential_table.py",
+)
 BUILD_SECTIONS = ("[project]", "[build-system]", "[tool.maturin]")
 
 

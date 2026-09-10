@@ -8,8 +8,18 @@ Linear mixed-effects models with `lme4` speed, the `statsmodels` API, and no R r
 [![CI](https://github.com/Fatin-Ishraq/mixedlm-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/Fatin-Ishraq/mixedlm-rs/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%20–%203.14-blue.svg)](https://github.com/Fatin-Ishraq/mixedlm-rs)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Status](https://img.shields.io/badge/status-beta-orange.svg)](docs/LIMITATIONS.md)
 
 </div>
+
+> **Beta — 0.1.0, first release.** The numerics are checked hard: the fits agree
+> with `lme4`'s published results to six decimals, and every claim in this
+> README is tied to a recorded experiment. What is *not* settled is the surface
+> area. This fits linear mixed models with **one grouping factor** — no crossed
+> or nested random effects, no variance components, no GLMMs — and it provides
+> no Kenward–Roger or Satterthwaite small-sample corrections. Read
+> [docs/LIMITATIONS.md](docs/LIMITATIONS.md) before depending on it for
+> published inference.
 
 ## What this is for
 

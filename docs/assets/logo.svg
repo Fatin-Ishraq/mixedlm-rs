@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"
+     width="256" height="256" role="img"
+     aria-label="mixedlm-rs: per-group regression lines fanning around a population slope">
+  <title>mixedlm-rs</title>
+  <desc>
+    The picture a mixed-effects model draws: several per-group regression lines,
+    each with its own intercept and slope, fanning around the thicker
+    population-level line they are shrunk towards.
+  </desc>
+
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#243447"/>
+      <stop offset="1" stop-color="#16202c"/>
+    </linearGradient>
+    <linearGradient id="fixed" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#ff8a4c"/>
+      <stop offset="1" stop-color="#ffb27a"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="256" height="256" rx="56" fill="url(#tile)"/>
+
+  <!-- axes: understated, just enough to read the shape as a plot -->
+  <g stroke="#3c5068" stroke-width="3" stroke-linecap="round">
+    <path d="M52 52 L52 204"/>
+    <path d="M52 204 L204 204"/>
+  </g>
+
+  <!-- the group lines: same story, different intercept and slope -->
+  <g fill="none" stroke="#7fb2e5" stroke-width="6" stroke-linecap="round"
+     opacity="0.85">
+    <path d="M64 176 L196 68"/>
+    <path d="M64 188 L196 104"/>
+    <path d="M64 166 L196 122"/>
+    <path d="M64 196 L196 146"/>
+  </g>
+
+  <!-- observations, a few per group -->
+  <g fill="#cfe4f7">
+    <circle cx="64" cy="176" r="6"/><circle cx="196" cy="68" r="6"/>
+    <circle cx="64" cy="188" r="6"/><circle cx="196" cy="104" r="6"/>
+    <circle cx="64" cy="166" r="6"/><circle cx="196" cy="122" r="6"/>
+    <circle cx="64" cy="196" r="6"/><circle cx="196" cy="146" r="6"/>
+  </g>
+
+  <!-- the population slope the groups are shrunk towards -->
+  <path d="M62 186 L198 110" fill="none" stroke="url(#fixed)" stroke-width="11"
+        stroke-linecap="round"/>
+</svg>
