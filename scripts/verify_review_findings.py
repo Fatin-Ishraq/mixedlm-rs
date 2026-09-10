@@ -1093,7 +1093,25 @@ def t5():
     import yaml  # named by the prerequisite check above if absent
 
     data = yaml.safe_load(release)
-    publish = data["jobs"]["publish"]["needs"]
+
+    def upstream(job, seen=None):
+        """Everything `job` depends on, transitively.
+
+        Direct dependencies are not the property: the verify jobs reach
+        `publish` through `release-set`, and a check that only looked one
+        level deep would call that a regression.
+        """
+        seen = seen if seen is not None else set()
+        needs = data["jobs"][job].get("needs") or []
+        if isinstance(needs, str):
+            needs = [needs]
+        for name in needs:
+            if name not in seen:
+                seen.add(name)
+                upstream(name, seen)
+        return seen
+
+    publish = sorted(upstream("publish"))
     required = {"tests", "verify-wheels", "verify-sdist"}
     callable_ci = "workflow_call" in ci
     built = {(e["platform"], e["target"]) for e in

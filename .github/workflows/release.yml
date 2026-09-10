@@ -259,7 +259,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/download-artifact@v4
         with:
-          name: sdist
+          name: release-sdist
           path: artifact
       # Rebuilds a wheel from *this* archive and runs that, rather than
       # inspecting the tarball's file list. A source archive that unpacks but
@@ -378,12 +378,69 @@ jobs:
           print(f"\nall {len(built)} wheels executed on their own architecture")
           PY
 
+  # Assembling and checking the upload set is separated from uploading it, so
+  # a `publish_to=nowhere` rehearsal exercises the part most likely to be
+  # wrong. When these steps lived inside `publish`, they were skipped exactly
+  # when someone was rehearsing -- the gate against publishing an unverified
+  # file was the one thing a rehearsal could not test.
+  #
+  # The checked set is then handed to `publish` as a single artifact, so the
+  # upload job cannot re-assemble a different one from the run's artifacts.
+  release-set:
+    name: the upload set is exactly what was verified
+    needs: [wheels, sdist, verify-wheels, verify-sdist, notices,
+            platform-coverage]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # `pattern:` is the whole point. Downloading without one takes *every*
+      # artifact in the run, and this run also contains the called CI
+      # workflow's wheels -- different builds with filenames identical to the
+      # release wheels. `merge-multiple` then flattens them into one
+      # directory, where a CI wheel silently replaces the release wheel the
+      # verify jobs actually installed and ran.
+      - name: Download only this release's distributions
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      # The verify jobs' records: filename and sha256 of what each installed
+      # and ran on a runner of its own architecture.
+      - name: Download the verification records
+        uses: actions/download-artifact@v4
+        with:
+          pattern: verified-*
+          path: manifests
+      - run: ls -laR dist/ manifests/
+      # Refuses an unexpected file, a missing one, a duplicate filename, or a
+      # file whose hash changed after it was verified. `--expect 6` is the
+      # five wheels plus the sdist: a platform that failed to build stops the
+      # release rather than shipping a short set.
+      - name: Every file to be published was verified
+        run: |
+          python scripts/check_release_set.py \
+            --dist dist --manifests manifests --expect 6
+      - name: Metadata is well formed
+        run: |
+          python -m pip install --upgrade pip twine
+          python -m twine check --strict dist/*
+      - name: Publish the blessed set as one artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-verified-set
+          path: dist/*
+          if-no-files-found: error
+
   publish:
     name: publish to ${{ inputs.publish_to || 'pypi' }}
-    # Every gate, not just the build. `tests` is the full CI suite for this
-    # exact commit; the verify jobs ran the actual artifacts.
-    needs: [tests, verify-wheels, verify-sdist, notices,
-            platform-coverage]
+    # Every gate: `tests` is the full CI suite for this exact commit, and
+    # `release-set` has already checked the files against the hashes recorded
+    # by the jobs that ran them.
+    needs: [tests, release-set]
     if: >-
       github.event_name == 'push' ||
       inputs.publish_to == 'pypi' ||
@@ -402,42 +459,14 @@ jobs:
       # to create, paste, rotate, or leak.
       id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      # `pattern:` is the whole point. Downloading without one takes *every*
-      # artifact in the run, and this run also contains the called CI
-      # workflow's wheels -- built under different conditions, with filenames
-      # identical to the release wheels. `merge-multiple` then flattens them
-      # into one directory, where a CI wheel silently replaces the release
-      # wheel that the verify jobs actually installed and ran.
-      - name: Download only this release's distributions
+      # Exactly the set release-set checked, by name. Not a pattern, not a
+      # merge: one artifact, assembled and verified in one place.
+      - name: Download the verified set
         uses: actions/download-artifact@v4
         with:
-          pattern: release-*
+          name: release-verified-set
           path: dist
-          merge-multiple: true
-      # The verify jobs' records: filename and sha256 of what each of them
-      # installed and ran.
-      - name: Download the verification records
-        uses: actions/download-artifact@v4
-        with:
-          pattern: verified-*
-          path: manifests
-      - run: ls -laR dist/ manifests/
-      # Refuses to publish an unexpected file, a missing one, a duplicate
-      # filename, or a file whose hash changed after it was verified.
-      # `--expect 6` is the five wheels plus the sdist; a platform that fails
-      # to build stops the release rather than shipping a short set.
-      - name: Every file to be published was verified
-        run: |
-          python scripts/check_release_set.py \
-            --dist dist --manifests manifests --expect 6
-      - name: Metadata is well formed
-        run: |
-          python -m pip install --upgrade pip twine
-          python -m twine check --strict dist/*
+      - run: ls -la dist/
       - name: Publish
         uses: pypa/gh-action-pypi-publish@release/v1
         with:

@@ -184,23 +184,86 @@ class TestTheWorkflowSelectsExplicitly:
         assert all(n.startswith(("release-", "verified-")) for n in published), (
             f"release artifacts must be distinguishable from CI's: {published}")
 
-    def test_publish_runs_the_gate_before_uploading(self, workflow):
-        steps = workflow["jobs"]["publish"]["steps"]
-        order = [step.get("run", "") + step.get("uses", "") for step in steps]
-        gate = next(i for i, text in enumerate(order)
-                    if "check_release_set.py" in text)
-        upload = next(i for i, text in enumerate(order)
-                      if "gh-action-pypi-publish" in text)
-        assert gate < upload, "the release set is checked after uploading"
+    @staticmethod
+    def _job_running(workflow, needle):
+        for name, job in workflow["jobs"].items():
+            for step in job.get("steps") or []:
+                if needle in (step.get("run", "") + step.get("uses", "")):
+                    return name
+        return None
 
-    def test_twine_check_runs_before_uploading(self, workflow):
-        steps = workflow["jobs"]["publish"]["steps"]
-        order = [step.get("run", "") + step.get("uses", "") for step in steps]
-        assert any("twine check" in text for text in order)
-        check = next(i for i, t in enumerate(order) if "twine check" in t)
-        upload = next(i for i, t in enumerate(order)
-                      if "gh-action-pypi-publish" in t)
-        assert check < upload
+    def test_the_gate_runs_in_a_job_publish_depends_on(self, workflow):
+        """Not merely "before the upload step" -- in a *separate* job.
+
+        The gate used to sit inside `publish`, which is skipped on a
+        `publish_to=nowhere` rehearsal. So the one defence against publishing
+        an unverified file was the one thing a rehearsal could not exercise.
+        """
+        gate_job = self._job_running(workflow, "check_release_set.py")
+        assert gate_job, "nothing runs the release-set gate"
+        assert gate_job != "publish", (
+            "the gate is inside the publish job, so a rehearsal skips it")
+        assert gate_job in workflow["jobs"]["publish"]["needs"], (
+            f"publish does not depend on {gate_job}, so it could upload "
+            "without the gate having run")
+
+    def test_the_gate_job_is_not_conditional(self, workflow):
+        """It must run on a rehearsal too, or rehearsing proves less."""
+        gate_job = self._job_running(workflow, "check_release_set.py")
+        assert "if" not in workflow["jobs"][gate_job], (
+            f"{gate_job} is conditional, so a rehearsal may skip the gate")
+
+    def test_twine_check_runs_before_any_upload(self, workflow):
+        twine_job = self._job_running(workflow, "twine check")
+        assert twine_job, "nothing runs twine check"
+        assert (twine_job == "publish"
+                or twine_job in workflow["jobs"]["publish"]["needs"]), (
+            "twine check does not run before the upload")
+
+    def test_every_downloaded_artifact_is_uploaded_somewhere(self, workflow):
+        """A rename that misses one side fails only at release time.
+
+        Renaming the sdist upload to `release-sdist` left `verify-sdist`
+        downloading `sdist`, and the rehearsal died with "Artifact not found
+        for name: sdist" after building every wheel. Nothing local caught it,
+        because both halves are valid YAML on their own.
+        """
+        uploaded, downloaded = set(), {}
+        for name, job in workflow["jobs"].items():
+            for step in job.get("steps") or []:
+                uses = step.get("uses", "")
+                using = step.get("with") or {}
+                if uses.startswith("actions/upload-artifact") and using.get("name"):
+                    uploaded.add(using["name"])
+                elif uses.startswith("actions/download-artifact") and using.get("name"):
+                    downloaded[using["name"]] = name
+
+        def matches(wanted):
+            # Matrix names contain ${{ }} on both sides; compare the literal
+            # prefix before the first expression.
+            head = wanted.split("${{")[0]
+            return any(candidate.split("${{")[0] == head
+                       for candidate in uploaded)
+
+        missing = {n: j for n, j in downloaded.items() if not matches(n)}
+        assert not missing, (
+            "these jobs download an artifact no job uploads, which fails only "
+            f"once a release is under way: {missing}. Uploaded: "
+            f"{sorted(uploaded)}")
+
+    def test_publish_uploads_only_the_checked_set(self, workflow):
+        """One named artifact, not a pattern it could widen."""
+        downloads = [
+            (step.get("with") or {}) for step in workflow["jobs"]["publish"]["steps"]
+            if step.get("uses", "").startswith("actions/download-artifact")]
+        assert downloads, "publish downloads nothing"
+        for using in downloads:
+            assert using.get("name"), (
+                "publish downloads by pattern; it must take the single "
+                f"artifact the gate blessed, got {using}")
+            assert not using.get("merge-multiple"), (
+                "publish merges artifacts, so it can assemble a set the gate "
+                "never saw")
 
 
 class TestEveryWheelIsExecuted:
