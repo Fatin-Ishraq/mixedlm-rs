@@ -1,0 +1,27 @@
+# Line endings are normalised in the repository and on checkout. This project
+# hashes its own installed sources to prove a wheel matches a baseline, and a
+# CRLF checkout once made that hash disagree with a clean CI checkout of
+# identical code -- sixteen jobs red over nothing. The hasher normalises now,
+# but the file it reads should not have varied in the first place.
+* text=auto eol=lf
+
+*.whl binary
+*.png binary
+*.svg text
+
+# Vendored, not authored. lme4's published fixtures, fetched verbatim from
+# Rdatasets and kept byte for byte so the oracle tests compare against the
+# same bytes lme4 published -- see data/README.md for the retrieval recipe.
+# They are GPL-2 while this project is MIT, which is why the sdist excludes
+# them; they should not be counted as this project's code either.
+data/** linguist-vendored
+
+# Vendored notice text from the crates the extension statically links.
+THIRD-PARTY-LICENSES.md linguist-vendored
+
+# Generated, not authored. Written by bench/make_charts.py and the recorders;
+# editing any of them by hand decouples the artefact from the run it depicts.
+docs/assets/*.svg linguist-generated
+bench/baseline.json linguist-generated
+bench/performance.json linguist-generated
+bench/stress_sweep_results.json linguist-generated
