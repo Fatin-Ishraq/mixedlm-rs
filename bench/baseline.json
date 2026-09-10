@@ -1,7 +1,7 @@
 {
  "recorded_at": "2026-09-10T18:05:11",
  "environment": {
-  "commit": "55c20ac1a6189b9452f233a7aeca3ef9e4f9a0db",
+  "commit": "40795e0ab33f9c0b54336fbfc9e78d798ea1f0f9",
   "working_tree_dirty": false,
   "mixedlm_rs": "0.1.1",
   "python": "3.14.3",
