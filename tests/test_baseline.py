@@ -71,6 +71,11 @@ def test_the_baseline_was_recorded_on_a_clean_tree(baseline):
 # change to differential.py or stress_sweep.py changes the numbers without
 # touching a line of the package.
 NUMERIC_PATHS = ("src", "python", "Cargo.toml", "Cargo.lock", "bench")
+# Individual files outside those directories that are still inputs to the
+# recorded numbers. tests/test_fuzz.py supplies the differential comparison's
+# fixtures: change how a case is generated and the counts change, with nothing
+# under bench/ or python/ touched.
+NUMERIC_FILES = ("tests/test_fuzz.py",)
 BUILD_SECTIONS = ("[project]", "[build-system]", "[tool.maturin]")
 
 
@@ -122,13 +127,14 @@ def test_no_code_has_changed_since_the_baseline_was_recorded(baseline):
     # is actually in when they run the suite. Diffing the working tree against
     # the recorded commit covers both.
     diff = subprocess.run(
-        ["git", "diff", "--name-only", commit, "--", *NUMERIC_PATHS],
+        ["git", "diff", "--name-only", commit, "--",
+         *NUMERIC_PATHS, *NUMERIC_FILES],
         cwd=ROOT, capture_output=True, text=True)
     if diff.returncode != 0:
         pytest.skip("git diff unavailable")
     untracked = subprocess.run(
         ["git", "ls-files", "--others", "--exclude-standard", "--",
-         *NUMERIC_PATHS],
+         *NUMERIC_PATHS, *NUMERIC_FILES],
         cwd=ROOT, capture_output=True, text=True)
     # The baseline file itself is the output, not an input to it.
     ignore = {"bench/baseline.json"}
@@ -165,6 +171,12 @@ def test_the_baseline_names_the_binary_that_produced_it(baseline):
         "the baseline does not identify the compiled extension it ran "
         "against. Re-run `python bench/baseline.py`.")
     assert env["extension_bytes"], "extension size not recorded"
+    # The extension alone is not the package. See
+    # tests/test_baseline_controls.py for the correspondence check.
+    assert env.get("python_sources_sha256"), (
+        "the baseline identifies the compiled extension but not the Python "
+        "sources that import it, and every recent change was a Python change. "
+        "Re-run `python bench/baseline.py`.")
 
 
 def test_the_baseline_publishes_no_machine_paths(baseline):
@@ -202,82 +214,151 @@ def test_the_baseline_is_a_full_run(baseline):
 
 
 # ------------------------------------------------------ differential counts
-def _differential_table_rows(text):
-    """Rows of a markdown table whose left cell mentions an outcome."""
-    wanted = {
-        "did not converge": "reference did not converge",
-        "better": "we found a better optimum",
-        "same optimum": "same optimum",
-        "worse": "we found a worse optimum",
-    }
-    found = {}
-    for line in text.splitlines():
-        if not line.startswith("|"):
+# Which recorded experiment a documented outcome row belongs to. Checking a
+# count against "either experiment" is how a table survives having 42 wins out
+# of 120 replaced with 131 -- the stress run's win count, for a different
+# experiment over different fixtures. Attribution comes from the prose above
+# each table, which is where a reader gets it too.
+OUTCOME_LABELS = {
+    "did not converge": "reference did not converge",
+    "better": "we found a better optimum",
+    "same optimum": "same optimum",
+    "worse": "we found a worse optimum",
+}
+
+# Outcome rows a table may carry that the counts block does not record; they
+# are validated separately, and must not be mistaken for a missing row.
+SIDE_LABELS = ("raised an exception", "failed to certify")
+
+
+def _tables_with_outcomes(text):
+    """Every markdown table that reports outcomes, tagged by experiment.
+
+    Yields ``(experiment, {outcome_key: value}, side_rows, first_line_no)``.
+    ``experiment`` is "differential", "stress" or None when the preamble does
+    not say which run produced the table -- an unattributable table is itself
+    a finding, because a reader cannot check it either.
+    """
+    lines = text.splitlines()
+    tables, current, start_at = [], None, 0
+    for number, line in enumerate(lines):
+        if line.startswith("|"):
+            if current is None:
+                current, start_at = [], number
+            current.append(line)
             continue
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        if len(cells) != 2:
+        if current is not None:
+            tables.append((start_at, current))
+            current = None
+    if current is not None:
+        tables.append((start_at, current))
+
+    for start_at, table in tables:
+        rows, side = {}, {}
+        for line in table:
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if len(cells) != 2:
+                continue
+            label, value = cells[0].lower(), cells[1]
+            digits = re.findall(r"\d+", value)
+            if not digits:
+                continue
+            for needle in SIDE_LABELS:
+                if needle in label:
+                    side[needle] = int(digits[-1])
+                    break
+            else:
+                for needle, key in OUTCOME_LABELS.items():
+                    if needle in label:
+                        rows[key] = int(digits[-1])
+                        break
+        if not rows:
             continue
-        label, value = cells
-        digits = re.findall(r"\d+", value)
-        if not digits:
-            continue
-        for needle, key in wanted.items():
-            if needle in label.lower():
-                found.setdefault(key, []).append(int(digits[-1]))
-    return found
+
+        # The preamble: the prose between the previous table and this one,
+        # capped so a distant mention cannot be borrowed.
+        preamble = " ".join(lines[max(0, start_at - 12):start_at]).lower()
+        experiment = None
+        if "400" in preamble or "stress" in preamble:
+            experiment = "stress"
+        elif "120" in preamble:
+            experiment = "differential"
+        yield experiment, rows, side, start_at + 1
 
 
 @pytest.mark.parametrize("name", sorted(DOCS))
-def test_documented_differential_counts_match_the_baseline(name, baseline):
-    """Every outcome count quoted anywhere must be the one recorded *for that
-    outcome*.
-
-    Deliberately permissive about *which* table a number is in -- the stress
-    sweep and the differential comparison share row labels, and a document may
-    legitimately quote either. Strict that the number has to be the recorded
-    value for the label it is written against: checking membership in the set
-    of all recorded counts, as this once did, accepts a table with "better"
-    and "same optimum" swapped, which is a wrong table made of right numbers.
-    """
+def test_every_outcome_table_is_attributable_to_one_experiment(name, baseline):
+    """A table a reader cannot attribute cannot be checked, by them or here."""
     text = DOCS[name].read_text(encoding="utf-8")
-    differential = baseline["differential"]["counts"]
-    stress = baseline["stress"]["counts"]
-    rows = _differential_table_rows(text)
-
-    for key, values in rows.items():
-        allowed = {c[key] for c in (differential, stress) if key in c}
-        if not allowed:
-            continue
-        for value in values:
-            assert value in allowed, (
-                f"{name} quotes {value} for '{key}', but the recorded runs "
-                f"give {sorted(allowed)} for that outcome "
-                f"(differential {differential.get(key)}, "
-                f"stress {stress.get(key)}). A number recorded for a "
-                "*different* outcome is not a defence. Re-run "
-                "`python bench/baseline.py` and update the document.")
+    unattributed = [line_no for experiment, _, _, line_no
+                    in _tables_with_outcomes(text) if experiment is None]
+    assert not unattributed, (
+        f"{name} has an outcome table at line(s) {unattributed} whose "
+        "preamble does not say which run produced it. Say '120 randomised "
+        "fixtures' or '400' above the table.")
 
 
 @pytest.mark.parametrize("name", sorted(DOCS))
-def test_documented_outcome_tables_are_complete(name, baseline):
-    """A table that simply omits a row cannot be caught by checking the rows
-    that are present.
+def test_documented_outcome_counts_match_their_own_experiment(name, baseline):
+    """Each value is checked against the run its own table names.
 
-    Dropping "we found a worse optimum" from a table makes the results look
-    unambiguous while every number left behind is correct, so per-row value
-    checking passes. Any table that reports outcomes has to report all four.
+    Not against the union of both runs. A README table headed "120 randomised
+    fixtures" that reported 131 wins -- the 400-case sweep's figure -- passed
+    the previous version of this check, because 131 was a recorded count for
+    *some* experiment.
     """
     text = DOCS[name].read_text(encoding="utf-8")
-    rows = _differential_table_rows(text)
-    if not rows:
-        pytest.skip(f"{name} quotes no outcome table")
-    required = {"reference did not converge", "we found a better optimum",
-                "same optimum", "we found a worse optimum"}
-    missing = sorted(required - set(rows))
-    assert not missing, (
-        f"{name} has an outcome table that omits {missing}. A partial table "
-        "reads as a complete one; every outcome the baseline records has to "
-        "appear.")
+    recorded = {"differential": baseline["differential"]["counts"],
+                "stress": baseline["stress"]["counts"]}
+    for experiment, rows, _side, line_no in _tables_with_outcomes(text):
+        if experiment is None:
+            continue                      # its own test above
+        want = recorded[experiment]
+        for key, value in rows.items():
+            assert key in want, (
+                f"{name}:{line_no} reports '{key}', which the {experiment} "
+                "run does not record")
+            assert value == want[key], (
+                f"{name}:{line_no} reports {value} for '{key}' in a table "
+                f"attributed to the {experiment} run, which recorded "
+                f"{want[key]}. The other run recorded "
+                f"{recorded['stress' if experiment == 'differential' else 'differential'].get(key)} "
+                "for that outcome -- a number from the wrong experiment is "
+                "not a defence.")
+
+
+@pytest.mark.parametrize("name", sorted(DOCS))
+def test_every_outcome_table_reports_every_outcome(name, baseline):
+    """Omitting a row makes results look unambiguous while every number left
+    behind is correct, so per-value checking cannot catch it."""
+    text = DOCS[name].read_text(encoding="utf-8")
+    recorded = {"differential": baseline["differential"]["counts"],
+                "stress": baseline["stress"]["counts"]}
+    for experiment, rows, _side, line_no in _tables_with_outcomes(text):
+        if experiment is None:
+            continue
+        missing = sorted(set(recorded[experiment]) - set(rows))
+        assert not missing, (
+            f"{name}:{line_no} is a {experiment} outcome table missing "
+            f"{missing}. A partial table reads as a complete one.")
+
+
+def test_the_documents_carry_both_experiments(baseline):
+    """Guards the premise of the tests above.
+
+    If the attribution rule silently stopped matching, every table would be
+    skipped as unattributable and the checks would pass over nothing.
+    """
+    seen = set()
+    for path in DOCS.values():
+        for experiment, _rows, _side, _line in _tables_with_outcomes(
+                path.read_text(encoding="utf-8")):
+            seen.add(experiment)
+    assert "differential" in seen and "stress" in seen, (
+        f"the documents no longer present both experiments (found {seen}); "
+        "the attribution rule has stopped matching and these checks are "
+        "inspecting nothing")
+
 
 
 def test_no_document_quotes_the_old_numbers(baseline):

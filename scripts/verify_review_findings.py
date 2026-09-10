@@ -37,6 +37,7 @@ import zipfile
 import numpy as np
 import pandas as pd
 import tomllib
+import yaml
 
 warnings.filterwarnings("ignore")
 ROOT = pathlib.Path.cwd()
@@ -655,18 +656,41 @@ def r6():
 
 
 def r7():
-    import time
-    t0 = time.perf_counter()
+    """Bad arguments are rejected before the optimiser runs.
+
+    Asserted by spying on the fitting core rather than by timing. The timing
+    version compared a validation against a fit on a shared runner and failed
+    a CI job at 35ms against a 20ms allowance, with the comparison fit taking
+    7ms -- a scheduling artefact, not a regression.
+    """
+    module = mlm.mixed_linear_model
+    original = module.fit_core
+    entered = []
+
+    def spy(*args, **kwargs):
+        entered.append(True)
+        return original(*args, **kwargs)
+
+    module.fit_core = spy
     try:
-        mlm.mixedlm("y ~ x", DF, groups=DF["g"]).fit(nonsense=1)
-    except TypeError:
-        pass
-    quick = time.perf_counter() - t0
-    t0 = time.perf_counter()
-    mlm.mixedlm("y ~ x", DF, groups=DF["g"]).fit()
-    full = time.perf_counter() - t0
-    return quick < max(full * 0.5, 0.05), \
-        f"rejected in {quick*1000:.1f}ms against a {full*1000:.0f}ms fit"
+        try:
+            mlm.mixedlm("y ~ x", DF, groups=DF["g"]).fit(nonsense=1)
+            raised = False
+        except TypeError:
+            raised = True
+        rejected_first = raised and not entered
+        # Negative control in the same breath: a real fit must trip the spy,
+        # or the check above would pass even with a spy that sees nothing.
+        mlm.mixedlm("y ~ x", DF, groups=DF["g"]).fit()
+        spy_works = bool(entered)
+    finally:
+        module.fit_core = original
+    return rejected_first and spy_works, (
+        "rejected without entering the fitting core; a real fit does enter it"
+        if rejected_first and spy_works
+        else f"raised={raised} entered_before_reject={not rejected_first} "
+             f"spy_observes_a_real_fit={spy_works}")
+
 
 
 def r8():
@@ -836,7 +860,8 @@ def s5():
             and "verify_review_findings.py" in job)
     src = read(ROOT / "scripts" / "verify_review_findings.py")
     # A top-level call, at column zero. Searching the whole file finds this
-    # check's own source, and splitting on "GROUPS = [" finds it too.
+    # check's own source, and splitting on the group-list assignment finds
+    # it too.
     guarded = any(line == "require_prerequisites()"
                   for line in src.splitlines())
     return have and guarded, \
@@ -924,17 +949,27 @@ def s9():
     """
     src = read(ROOT / "tests" / "test_baseline.py")
     rec = read(ROOT / "bench" / "baseline.py")
+    controls = read(ROOT / "tests" / "test_baseline_controls.py")
     narrowed = "_pyproject_build_sections" in src and '"bench"' in src
-    paired = "recorded runs" in src and "allowed = {c[key]" in src
-    complete = "test_documented_outcome_tables_are_complete" in src
+    paired = ("test_documented_outcome_counts_match_their_own_experiment" in src
+              and "_tables_with_outcomes" in src)
+    complete = "test_every_outcome_table_reports_every_outcome" in src
+    negative = all(
+        name in controls for name in
+        ("test_a_count_from_the_other_experiment_is_rejected",
+         "test_a_missing_outcome_row_is_rejected",
+         "test_swapped_outcome_values_are_rejected"))
     working_tree = "--exclude-standard" in src
     shallow = "fetch-depth" in read(ROOT / ".github" / "workflows" / "ci.yml")
     binary = "_extension_identity" in rec and "extension_sha256" in rec
+    sources = "_python_sources_digest" in rec and "python_sources_sha256" in rec
+    generator = "NUMERIC_FILES" in src and "test_fuzz" in src
     suites = "failed = [name for name, run in" in rec
-    checks = {"narrowed": narrowed, "label-paired": paired,
-              "row-complete": complete, "working-tree": working_tree,
-              "full-history": shallow, "binary-identity": binary,
-              "all-suites": suites}
+    checks = {"narrowed": narrowed, "experiment-paired": paired,
+              "row-complete": complete, "negative-controls": negative,
+              "working-tree": working_tree, "full-history": shallow,
+              "binary-identity": binary, "source-identity": sources,
+              "generator-watched": generator, "all-suites": suites}
     bad = [k for k, v in checks.items() if not v]
     return not bad, ("freshness, identity, pairing and propagation all fixed"
                      if not bad else f"missing: {bad}")
@@ -977,6 +1012,135 @@ def s10d():
         "the persistence promise is narrowed to what is delivered"
 
 
+
+# ============================================ RECHECK2.md, findings 1-8
+def t1():
+    """A missing group label no longer breaks restored prediction.
+
+    Row-selection bookkeeping is unified: patsy's retained rows and the
+    group-present filter resolve together, before the design is built, so the
+    fitted design and any rebuilt design are the same object.
+    """
+    d = DF.copy()
+    d.loc[d.index[0], "g"] = np.nan
+    r = mlm.mixedlm("y ~ center(x)", d, groups="g", missing="drop").fit()
+    new = pd.DataFrame({"x": [0.1, 0.5, 1.2]})
+    before = np.asarray(r.predict(new), float)
+    after = np.asarray(pickle.loads(pickle.dumps(r)).predict(new), float)
+    rows_agree = len(r.model._design_rows) == int(r.nobs)
+    return bool(np.array_equal(before, after)) and rows_agree, \
+        (f"missing group: {int(r.nobs)} rows fitted, "
+         f"{len(r.model._design_rows)} recorded, prediction gap "
+         f"{float(np.max(np.abs(before - after))):.3e}")
+
+
+def t2():
+    """A module alias in a formula survives a pickle."""
+    import numpy as numeric  # noqa: F401  (patsy resolves it)
+    # log() needs a positive column; the shared fixture's x is centred normal.
+    d = DF.copy()
+    d["x"] = np.abs(np.asarray(d["x"], float)) + 1.0
+    results = []
+    for kwargs in ({}, {"re_formula": "~numeric.log(x)"}):
+        formula = "y ~ x" if kwargs else "y ~ numeric.log(x)"
+        r = mlm.MixedLM.from_formula(formula, d, groups="g", **kwargs).fit()
+        new = pd.DataFrame({"x": [0.4, 0.9]})
+        before = np.asarray(r.predict(new), float)
+        after = np.asarray(pickle.loads(pickle.dumps(r)).predict(new), float)
+        results.append(bool(np.array_equal(before, after)))
+    captured = mlm.MixedLM.from_formula(
+        "y ~ numeric.log(x)", d, groups="g")._formula_namespace
+    root_only = "numeric" in captured and "log" not in captured
+    return all(results) and root_only, \
+        "fixed and random formulas round-trip; only the alias root captured"
+
+
+def t3():
+    """Capture touches nothing the formula does not resolve externally."""
+    calls = []
+
+    class Tracked:
+        def __reduce__(self):
+            calls.append("reduce")
+            return (str, ("tracked",))
+
+    x = Tracked()                       # noqa: F841 - shadows a column
+    unused = np.arange(1000.0)          # noqa: F841
+    model = mlm.MixedLM.from_formula("y ~ x", DF, groups="g")
+    captured = model._formula_namespace or {}
+    arrays = [k for k, v in captured.items() if isinstance(v, np.ndarray)]
+    return (not calls and "x" not in captured and not arrays), \
+        (f"__reduce__ calls {len(calls)}, captured {sorted(captured)}, "
+         f"retained arrays {arrays}")
+
+
+def t4():
+    """The release verify step installs an exact artifact, deps resolving."""
+    text = read(ROOT / ".github" / "workflows" / "release.yml")
+    broken = "--no-index --find-links collected mixedlm-rs" in text
+    uses_script = "verify_release_artifacts.py" in text
+    script = read(ROOT / "scripts" / "verify_release_artifacts.py")
+    provenance = "direct_url" in script and "archive_info" in script
+    return (not broken) and uses_script and provenance, \
+        ("exact-path install with dependency resolution; provenance checked "
+         "against pip's recorded archive hash")
+
+
+def t5():
+    """Publication is gated on tests for this commit, and on run artifacts."""
+    release = read(ROOT / ".github" / "workflows" / "release.yml")
+    ci = read(ROOT / ".github" / "workflows" / "ci.yml")
+    data = yaml.safe_load(release)
+    publish = data["jobs"]["publish"]["needs"]
+    required = {"tests", "verify-wheels", "verify-sdist"}
+    callable_ci = "workflow_call" in ci
+    runners = {entry["runner"] for entry in
+               data["jobs"]["verify-wheels"]["strategy"]["matrix"]["include"]}
+    states_gap = "NOT executed: linux/aarch64" in release
+    return (required <= set(publish) and callable_ci and len(runners) >= 3
+            and states_gap), \
+        (f"publish needs {sorted(publish)}; wheels run on {len(runners)} "
+         "runner types; unexecuted architectures stated")
+
+
+def t6():
+    """No wall-clock assertion decides whether validation preceded fitting."""
+    text = read(ROOT / "tests" / "test_fit_arguments.py")
+    timing = [line.strip() for line in text.splitlines()
+              if "perf_counter" in line or "quick <" in line]
+    spy = "optimiser_must_not_run" in text and "fit_core" in text
+    control = "test_the_spy_would_notice_a_real_fit" in text
+    return (not timing) and spy and control, \
+        ("argument rejection asserted by spying on fit_core, with a negative "
+         "control" if not timing else f"timing assertions remain: {timing[:2]}")
+
+
+def t7():
+    """A count from the wrong experiment is rejected."""
+    controls = read(ROOT / "tests" / "test_baseline_controls.py")
+    src = read(ROOT / "tests" / "test_baseline.py")
+    return (all(name in controls for name in (
+                "test_a_count_from_the_other_experiment_is_rejected",
+                "test_a_missing_outcome_row_is_rejected",
+                "test_swapped_outcome_values_are_rejected"))
+            and "test_documented_outcome_counts_match_their_own_experiment" in src
+            and "NUMERIC_FILES" in src), \
+        "cross-experiment, missing-row and swap controls all present"
+
+
+def t8():
+    """The migration conclusion defers to the full contract."""
+    text = read(ROOT / "docs" / "COMPATIBILITY.md")
+    section = text[text.index("## Deciding whether to switch"):]
+    absolute = "the import swap really is the whole migration" in section
+    named = [n for n in ("free", "fe_pen", "profile_re", "fit_regularized",
+                         "vc_formula", "use_sparse", "by label")
+             if n not in section]
+    return (not absolute) and not named, \
+        ("checklist covers penalties, free, profiling, alignment and "
+         "persistence" if not named else f"still omits {named}")
+
+
 GROUPS = [
     ("REVIEW", [(f"F{i:02d}", fn) for i, fn in enumerate(
         [f01, f02, f03, f04, f05, f06, f07, f08, f09, f10, f11, f12, f13,
@@ -989,6 +1153,8 @@ GROUPS = [
                  ("S6", s6), ("S7", s7), ("S8", s8), ("S9", s9),
                  ("S10", s10), ("S10b", s10b), ("S10c", s10c),
                  ("S10d", s10d)]),
+    ("RECHECK2", [("T1", t1), ("T2", t2), ("T3", t3), ("T4", t4),
+                  ("T5", t5), ("T6", t6), ("T7", t7), ("T8", t8)]),
 ]
 
 # What each check is actually evidence of. Reporting a single total invited
@@ -998,6 +1164,7 @@ GROUPS = [
 # machine. Only the behavioural ones run the code and assert on the answer.
 KIND = {
     "behaviour": {
+        "T1", "T2", "T3", "T6",
         "F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09", "F10",
         "F11", "F12", "F13", "F14", "F15", "F16", "F17", "F18", "F19", "F20",
         "F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28",
@@ -1005,6 +1172,7 @@ KIND = {
         "S1", "S1b", "S2", "S2b", "S3", "S3b", "S10",
     },
     "release evidence": {"F37", "R1", "S7"},
+    "workflow (not executed)": {"T4", "T5"},
     "negative control": {"S6"},
 }
 
@@ -1017,14 +1185,15 @@ for group, items in GROUPS:
 
 width = max(len(d) for *_, d in RESULTS)
 print()
-for group in ("REVIEW", "RECHECK", "STAGE13"):
+for group in ("REVIEW", "RECHECK", "STAGE13", "RECHECK2"):
     rows = [r for r in RESULTS if r[0] == group]
     # Named, not pathed: these documents were an external deliverable and are
     # not in the repository, so printing a repo-relative path would send a
     # reader looking for a file that is not there.
     doc = {"REVIEW": "review 1 (REVIEW.md)",
            "RECHECK": "review 2 (RECHECK.md)",
-           "STAGE13": "review 3 (STAGE13-REVIEW.md)"}[group]
+           "STAGE13": "review 3 (STAGE13-REVIEW.md)",
+           "RECHECK2": "review 4 (RECHECK2.md)"}[group]
     print(f"--- {doc}: {sum(1 for r in rows if r[2])}/{len(rows)} ---")
     for _, label, ok, detail in rows:
         print(f"  {label}  {'PASS' if ok else '**FAIL**':9s} {detail}")
@@ -1042,7 +1211,7 @@ def kind_of(label):
 
 print(f"TOTAL: {len(RESULTS) - len(failed)}/{len(RESULTS)} checks pass")
 for name in ("behaviour", "release evidence", "negative control",
-             "documentation"):
+             "workflow (not executed)", "documentation"):
     rows = [r for r in RESULTS if kind_of(r[1]) == name]
     if rows:
         print(f"  {name:18s} {sum(1 for r in rows if r[2])}/{len(rows)}")

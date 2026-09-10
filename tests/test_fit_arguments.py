@@ -2,12 +2,18 @@
 
 Rejecting a bad argument after the fit is nearly as unhelpful as not rejecting
 it: on a large model the caller waits out a full optimisation to be told the
-keyword they passed was never read. Every check here is timed as well as
-asserted, so "before the optimiser" is a property under test rather than a
-claim in a comment.
+keyword they passed was never read. So "before the optimiser" is a property
+under test rather than a claim in a comment -- asserted by spying on the
+fitting core and requiring that it is never entered, not by timing the call.
+
+The timing version of that assertion was flaky by construction: it compared a
+validation against a fit on a shared CI runner, and a Windows/Python 3.14 job
+failed it at 0.0354s against a 0.0200s allowance while the fit it was compared
+against took 0.0070s -- the argument had plainly been rejected first. A spy
+answers the question directly and gives the same answer on every machine.
 """
 
-import time
+import contextlib
 import warnings
 
 import mixedlm_rs as mlm
@@ -31,19 +37,57 @@ def model():
     return mlm.mixedlm("y ~ x", DF, groups=DF["g"])
 
 
-def elapsed(fn):
-    t0 = time.perf_counter()
-    with pytest.raises((TypeError, ValueError)):
-        fn()
-    return time.perf_counter() - t0
+@contextlib.contextmanager
+def optimiser_must_not_run():
+    """Fail if the fitting core is entered at all.
+
+    This replaces a wall-clock assertion. "Validation was faster than a fit"
+    is a proxy for "validation happened first", and on a shared CI runner it
+    is a bad one: the Windows/Python 3.14 job measured 0.0354s against a
+    0.0200s allowance and failed, while a 0.0070s fit showed the argument had
+    obviously been rejected before the optimiser. Raising the threshold would
+    have kept a test that cannot distinguish a slow machine from a real
+    regression.
+
+    Patching the name `mixed_linear_model` actually calls is what makes this
+    exact: `fit()` resolves `fit_core` from its own module globals, so a spy
+    installed there sees every entry into the numerical core and nothing else.
+    """
+    calls = []
+    original = mlm.mixed_linear_model.fit_core
+
+    def spy(*args, **kwargs):
+        calls.append(True)
+        return original(*args, **kwargs)
+
+    mlm.mixed_linear_model.fit_core = spy
+    try:
+        yield calls
+    finally:
+        mlm.mixed_linear_model.fit_core = original
+    assert not calls, (
+        f"the fitting core was entered {len(calls)} time(s) before the "
+        "argument was rejected; validation is running after the optimiser")
 
 
-def baseline_fit_seconds():
+def rejected_before_fitting(call, expected=(TypeError, ValueError)):
+    """`call` raises, and the optimiser never ran."""
+    with optimiser_must_not_run():
+        with pytest.raises(expected):
+            call()
+
+
+def test_the_spy_would_notice_a_real_fit():
+    """A negative control, so the checks above cannot pass vacuously.
+
+    If the spy silently failed to observe `fit_core`, every
+    `rejected_before_fitting` assertion would pass for the wrong reason.
+    """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        t0 = time.perf_counter()
-        model().fit()
-        return time.perf_counter() - t0
+        with pytest.raises(AssertionError, match="fitting core was entered"):
+            with optimiser_must_not_run():
+                model().fit()
 
 
 # ------------------------------------------------------------ unknown keywords
@@ -57,11 +101,7 @@ def test_unknown_keyword_is_refused():
 
 def test_unknown_keyword_is_refused_before_fitting():
     """The point of the check: it must not cost a fit to find out."""
-    slow = baseline_fit_seconds()
-    quick = elapsed(lambda: model().fit(nonsense=1))
-    assert quick < max(slow * 0.25, 0.02), (
-        f"rejecting an unknown keyword took {quick:.4f}s against a "
-        f"{slow:.4f}s fit; it is running the optimiser first")
+    rejected_before_fitting(lambda: model().fit(nonsense=1), TypeError)
 
 
 def test_several_unknown_keywords_are_all_named():
@@ -114,9 +154,7 @@ def test_non_integer_maxiter_is_refused(bad):
 
 
 def test_maxiter_is_refused_before_fitting():
-    slow = baseline_fit_seconds()
-    quick = elapsed(lambda: model().fit(maxiter=0))
-    assert quick < max(slow * 0.25, 0.02)
+    rejected_before_fitting(lambda: model().fit(maxiter=0), ValueError)
 
 
 # ------------------------------------------------------------------- n_starts
@@ -147,9 +185,7 @@ def test_wrong_length_start_params_is_refused():
 
 
 def test_start_params_shape_is_checked_before_fitting():
-    slow = baseline_fit_seconds()
-    quick = elapsed(lambda: model().fit(start_params=np.zeros(7)))
-    assert quick < max(slow * 0.25, 0.02)
+    rejected_before_fitting(lambda: model().fit(start_params=np.zeros(7)))
 
 
 def test_wrong_shaped_params_object_is_refused():

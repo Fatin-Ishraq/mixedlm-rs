@@ -21,8 +21,12 @@ on:
         options: [nowhere, testpypi, pypi]
         default: nowhere
 
-# Nothing is granted by default; the publish job asks for exactly what it needs.
-permissions: {}
+# Read-only by default -- enough for checkout and for the reusable CI call,
+# and nothing else. The publish job asks for the one extra scope it needs.
+# `permissions: {}` was too tight: it leaves actions/checkout and the called
+# workflow without even contents:read.
+permissions:
+  contents: read
 
 jobs:
   # The tag says 0.1.0 and pyproject says 0.1.1 is a mistake you cannot take
@@ -70,6 +74,17 @@ jobs:
                   "after deletion, so this stops here.")
           print(f"tag {raw} matches the declared version {declared}")
           PY
+
+  # The full CI suite, run against the exact commit being released. Publication
+  # depends on this job, so a tag on an untested or failing commit stops here:
+  # CI's own push trigger covers main and master, never tags, so before this
+  # existed a tag could reach the publish step with no suite having run for it.
+  tests:
+    name: full CI for this commit
+    needs: check-version
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
 
   wheels:
     name: wheel ${{ matrix.platform }}-${{ matrix.target }}
@@ -142,10 +157,25 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
-  verify:
-    name: artifacts install and work
-    needs: [wheels, sdist]
-    runs-on: ubuntu-latest
+  # Each wheel is installed and *run* on a runner of its own platform. The
+  # previous version installed only the Ubuntu-compatible wheel and read the
+  # rest as ZIP files to check their notices; reading an archive is not running
+  # it, and cross-compiling is not testing.
+  verify-wheels:
+    name: run wheel ${{ matrix.platform }}-${{ matrix.target }}
+    needs: wheels
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux,   target: x86_64,  runner: ubuntu-latest }
+          - { platform: macos,   target: aarch64, runner: macos-latest }
+          - { platform: macos,   target: x86_64,  runner: macos-13 }
+          - { platform: windows, target: x64,     runner: windows-latest }
+          # linux/aarch64 is deliberately absent -- see the
+          # `unexecuted-architectures` job, which states that in the run log
+          # rather than leaving it to be inferred from this list.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -153,12 +183,60 @@ jobs:
           python-version: "3.12"
       - uses: actions/download-artifact@v4
         with:
+          name: wheel-${{ matrix.platform }}-${{ matrix.target }}
+          path: artifact
+      # Installs the exact file, with dependencies resolving normally, then
+      # checks pip's direct_url.json hash against the file on disk so
+      # "installed from the intended artifact" is verified and not assumed.
+      - name: Install and run this exact wheel
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          wheel=$(ls artifact/*.whl | head -1)
+          echo "verifying $wheel"
+          python scripts/verify_release_artifacts.py --wheel "$wheel"
+
+  verify-sdist:
+    name: rebuild and run the release sdist
+    needs: sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: artifact
+      # Rebuilds a wheel from *this* archive and runs that, rather than
+      # inspecting the tarball's file list. A source archive that unpacks but
+      # does not build is a broken release.
+      - name: Rebuild from the exact sdist and run it
+        run: |
+          python -m pip install --upgrade pip
+          python scripts/verify_release_artifacts.py \
+            --sdist "$(ls artifact/*.tar.gz | head -1)"
+
+  notices:
+    name: every artifact carries upstream notices
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
           path: collected
           merge-multiple: true
-      - name: Every artifact carries the upstream licence notices
+      # A static check, and labelled as one: it reads the archives. The
+      # runtime evidence comes from verify-wheels and verify-sdist.
+      - name: Read the notices out of every wheel
         run: |
           python - <<'PY'
-          import glob, zipfile, sys
+          import glob, sys, zipfile
 
           wheels = sorted(glob.glob("collected/*.whl"))
           assert wheels, "no wheels were produced"
@@ -185,31 +263,36 @@ jobs:
               sys.exit("\n".join(bad))
           print(f"{len(wheels)} wheels, all carrying upstream notices")
           PY
-      - name: Install this runner's wheel and run the documented example
+
+  unexecuted-architectures:
+    name: architectures shipped without being run
+    needs: [verify-wheels, verify-sdist]
+    runs-on: ubuntu-latest
+    steps:
+      # Stated in the run log, on purpose. A wheel that was cross-compiled and
+      # never executed is a different kind of evidence from one that was
+      # installed and fitted a model, and the difference should not have to be
+      # reconstructed from the job list.
+      - name: State what was not executed
         run: |
-          python -m pip install --upgrade pip
-          # --no-index: install the built artifact, never PyPI. Without it a
-          # resolver fallback could quietly test a different package.
-          python -m pip install --no-index --find-links collected mixedlm-rs
-          cd "$(mktemp -d)"          # outside the checkout, so the import
-                                     # cannot come from python/mixedlm_rs/
-          python - <<'PY'
-          import numpy as np, pandas as pd, mixedlm_rs as mlm
-          rng = np.random.default_rng(0)
-          g = np.repeat(np.arange(20), 10)
-          x = rng.normal(size=200)
-          y = 1 + 0.5 * x + rng.normal(size=20)[g] + rng.normal(size=200) * 0.5
-          d = pd.DataFrame({"y": y, "x": x, "g": g})
-          r = mlm.mixedlm("y ~ x", d, groups=d["g"], re_formula="~x").fit()
-          assert r.converged, "the documented example did not converge"
-          assert abs(r.fe_params[1] - 0.5) < 0.15, r.fe_params
-          print(mlm.__file__)
-          print(r.summary())
-          PY
+          cat <<'TXT'
+          Executed: linux/x86_64, macos/aarch64, macos/x86_64, windows/x64
+          -- each installed from its exact wheel on a matching runner and used
+          to fit a model, plus a wheel rebuilt from the exact sdist.
+
+          NOT executed: linux/aarch64.
+          It is cross-compiled by maturin-action under QEMU and no arm64 Linux
+          runner is used here, so it has been built and its contents read, but
+          never imported or run. Treat it as untested until an arm64 runner is
+          added to verify-wheels.
+          TXT
 
   publish:
     name: publish to ${{ inputs.publish_to || 'pypi' }}
-    needs: verify
+    # Every gate, not just the build. `tests` is the full CI suite for this
+    # exact commit; the verify jobs ran the actual artifacts.
+    needs: [tests, verify-wheels, verify-sdist, notices,
+            unexecuted-architectures]
     if: >-
       github.event_name == 'push' ||
       inputs.publish_to == 'pypi' ||
@@ -222,6 +305,7 @@ jobs:
       name: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_to == 'testpypi') && 'testpypi' || 'pypi' }}
       url: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_to == 'testpypi') && 'https://test.pypi.org/p/mixedlm-rs' || 'https://pypi.org/p/mixedlm-rs' }}
     permissions:
+      contents: read
       # Trusted Publishing: GitHub mints a short-lived OIDC token that PyPI
       # verifies against the publisher you registered. There is no API token
       # to create, paste, rotate, or leak.

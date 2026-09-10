@@ -5,6 +5,11 @@ on:
     branches: [main, master]
   pull_request:
   workflow_dispatch:
+  # release.yml calls this on the exact commit being released. Without it,
+  # publication was gated on nothing: CI's push trigger covers main and master,
+  # not tags, so a tag on an untested or failing commit reached the publish
+  # step with no suite having run for it.
+  workflow_call:
 
 jobs:
   lint:
@@ -205,6 +210,17 @@ jobs:
         with:
           python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
+      # Two complementary checks. verify_release.py builds both artifacts and
+      # exercises the whole path; verify_release_artifacts.py is the single
+      # -artifact verifier the release workflow runs on each platform, so a
+      # break in it surfaces here rather than during a release.
+      - name: The per-artifact verifier the release workflow uses
+        run: |
+          python -m pip install --upgrade pip maturin
+          python -m maturin build --release --out dist
+          python -m maturin sdist --out dist
+          python scripts/verify_release_artifacts.py             --wheel "$(ls dist/*.whl | head -1)"             --sdist "$(ls dist/*.tar.gz | head -1)"
+        shell: bash
       # Builds a wheel and an sdist, installs the exact wheel into a clean
       # venv *outside* the checkout, rebuilds a wheel from the unpacked sdist,
       # and runs the documented example, numerical smoke tests and save/load

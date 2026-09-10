@@ -13,6 +13,7 @@ wrong rather than merely different; every such case is documented in
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import warnings
@@ -508,30 +509,109 @@ def _align_group_series(groups, data, positions):
           "like `data`, or a plain array in row order.")
 
 
-_PY_IDENTIFIER = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
+def _formula_root_names(formula, re_formula):
+    """The names a formula resolves from outside the data frame.
+
+    patsy hands each factor's source text back through ``ModelDesc``; parsing
+    that text properly is what distinguishes `numeric` in ``numeric.log(x)``
+    -- an alias that must travel with the model -- from `log`, an attribute of
+    it that must not be looked up on its own. A regular expression over the
+    formula string cannot tell those apart, and returned both.
+
+    Only the *root* of each attribute chain is returned, plus bare names.
+    """
+    from patsy import ModelDesc
+
+    codes: list[str] = []
+    for text in (formula, re_formula):
+        if text is None or not str(text).strip():
+            continue
+        source = str(text)
+        try:
+            desc = ModelDesc.from_formula(source)
+        except Exception:    # patsy raises broadly; any failure here is theirs
+            # Unparseable here means unparseable at fit time too, and that
+            # error belongs to patsy, not to this bookkeeping.
+            codes.append(source)
+            continue
+        for side in (desc.lhs_termlist, desc.rhs_termlist):
+            for term in side:
+                for factor in term.factors:
+                    code = getattr(factor, "code", None)
+                    if code:
+                        codes.append(code)
+
+    names: set[str] = set()
+    for code in codes:
+        try:
+            tree = ast.parse(code, mode="eval")
+        except SyntaxError:
+            names.update(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", code))
+            continue
+        for node in ast.walk(tree):
+            # ast.Attribute is deliberately not walked into for its attr:
+            # `numeric.log` yields the Name `numeric` and nothing else.
+            if isinstance(node, ast.Name):
+                names.add(node.id)
+    return names
 
 
-def _formula_namespace(formula, re_formula, eval_env):
-    """Capture the caller-defined names a formula depends on.
+class _ModuleAlias:
+    """A module a formula refers to by name, recorded so it can be re-imported.
 
-    patsy resolves ``custom(x)`` out of the caller's namespace at fit time. The
-    fitted model outlives that namespace, so the design cannot be rebuilt after
-    a pickle round-trip unless the objects come along.
+    ``import numpy as numeric`` then ``y ~ numeric.log(x)`` needs `numeric`
+    bound at rebuild time. The module object itself does not pickle, and
+    skipping modules entirely -- which this used to do -- left the alias
+    unbound and the formula unevaluable after a round trip. The importable
+    name does pickle, and re-importing it reproduces the same module.
+    """
 
-    Only names the formula actually mentions are captured, only when they are
-    not columns of the data, and only when they pickle. A module-level function
-    -- the ordinary case -- pickles by qualified name and costs nothing. A
-    lambda or a closure does not pickle; it is left behind deliberately, and
-    :meth:`_ensure_design_info` reports it by name rather than guessing.
+    __slots__ = ("module_name",)
+
+    def __init__(self, module_name):
+        self.module_name = module_name
+
+    def resolve(self):
+        import importlib
+        return importlib.import_module(self.module_name)
+
+    def __repr__(self):
+        return f"_ModuleAlias({self.module_name!r})"
+
+
+def _formula_namespace(formula, re_formula, eval_env, data=None):
+    """Capture what a formula needs from the caller's namespace, and no more.
+
+    Three rules, each of which this got wrong before:
+
+    * **Only names the formula actually resolves externally.** The names come
+      from patsy's own parse of the formula, not from a regex over its text.
+
+    * **Data frame columns win.** patsy resolves a column before it looks at
+      the evaluation environment, so a caller variable that happens to share a
+      column's name is never consulted at fit time and must not be captured.
+      Capturing it retained unrelated arrays in the model and -- because
+      portability used to be probed by pickling -- ran a caller object's
+      ``__reduce__`` during ``from_formula``, for a name the formula never
+      used.
+
+    * **Nothing is pickled here.** Whether a captured object survives is
+      decided at save time, in ``__getstate__``, which is where serialising is
+      the point. Construction does not serialise anything.
     """
     if eval_env is None:
         return {}
-    text = str(formula) + " " + ("" if re_formula is None else str(re_formula))
-    wanted = set(_PY_IDENTIFIER.findall(text))
+    wanted = _formula_root_names(formula, re_formula)
     if not wanted:
         return {}
 
-    import pickle
+    # patsy looks in the data first, so anything a column provides is not an
+    # external dependency at all.
+    if data is not None:
+        wanted -= {str(c) for c in getattr(data, "columns", ())}
+    if not wanted:
+        return {}
+
     from types import ModuleType
 
     captured = {}
@@ -545,14 +625,10 @@ def _formula_namespace(formula, re_formula, eval_env):
             except Exception:
                 continue
             if isinstance(value, ModuleType):
-                break
-            try:
-                pickle.loads(pickle.dumps(value))
-            except Exception:
-                # Not portable across the pickle boundary. Recording the name
-                # with no value lets the restore path say which transform is
-                # missing instead of blaming the retained training frame.
-                captured[name] = _Unpicklable(name, type(value).__name__)
+                module_name = getattr(value, "__name__", None)
+                captured[name] = (
+                    _ModuleAlias(module_name) if module_name
+                    else _Unpicklable(name, "module"))
             else:
                 captured[name] = value
             break
@@ -634,6 +710,10 @@ class MixedLM:
         # selection or the stateful transforms relearn different state.
         self._design_rows: np.ndarray | None = kwargs.pop(
             "_design_rows", None)
+        # Human-readable trace of how many rows survived each selection step,
+        # surfaced in the error when a rebuild disagrees with the fit.
+        self._row_selection_steps: tuple[tuple[str, int], ...] | None = (
+            kwargs.pop("_row_selection_steps", None))
         self._formula_namespace: dict[str, Any] | None = kwargs.pop(
             "_formula_namespace", None)
         self._design_rebuild_error: str | None = None
@@ -680,6 +760,15 @@ class MixedLM:
             endog, exog, exog_re, groups = endog[ok], exog[ok], exog_re[ok], groups[ok]
             if len(endog) == 0:
                 raise ValueError("every row was dropped as missing")
+            # Every row-selection step composes onto the same record. This one
+            # is a no-op for the formula path -- from_formula resolves group
+            # and predictor missingness together before building the design --
+            # but the direct-array path reaches here too, and a `_design_rows`
+            # that does not survive this filter describes rows the model was
+            # not fitted on.
+            rows = self._design_rows
+            if rows is not None and len(rows) == len(ok):
+                self._design_rows = np.asarray(rows)[ok]
         else:
             bad = int((~np.isfinite(endog)).sum() + (~np.isfinite(exog)).sum()
                       + (~np.isfinite(exog_re)).sum()
@@ -771,6 +860,28 @@ class MixedLM:
                 f"groups has length {len(groups_arr)} but the selected data "
                 f"has {len(data)} rows")
 
+        # Rows with no group label are removed *before* the design is built,
+        # not after. A missing group is a dropped observation, and a stateful
+        # transform that learned its state over rows the model was never
+        # fitted on has learned the wrong state: `center(x)` centred on the
+        # mean of 200 rows while 199 were fitted, so rebuilding the design
+        # later -- correctly, over the fitted rows -- produced a different
+        # design and predictions that did not round-trip. Resolving both
+        # selections in one place is what keeps the fitted design and the
+        # rebuildable design the same object.
+        present = _group_is_present(groups_arr)
+        if not present.all():
+            if missing != "drop":
+                raise ValueError(
+                    f"{int((~present).sum())} row(s) have a missing `groups` "
+                    "label. A missing group is not a group; pass "
+                    "missing='drop' to remove those rows.")
+            selected = np.flatnonzero(present)
+            data = data.iloc[selected]
+            groups_arr = groups_arr[selected]
+        else:
+            selected = np.arange(len(data), dtype=np.intp)
+
         # Work on a positional index so patsy's NA handling and the group array
         # can be re-aligned by position rather than by label.
         work = data.reset_index(drop=True)
@@ -787,8 +898,13 @@ class MixedLM:
                    _re_design_info=re_design,
                    _data_frame=data,
                    _design_rows=kept,
+                   _row_selection_steps=(
+                       ("subset", len(positions)),
+                       ("groups present", int(present.sum())),
+                       ("complete cases", len(kept)),
+                   ),
                    _formula_namespace=_formula_namespace(
-                       formula, re_formula, eval_env),
+                       formula, re_formula, eval_env, data),
                    **kwargs)
 
     # -- fitting ------------------------------------------------------------
@@ -1103,7 +1219,7 @@ class MixedLM:
             import pickle as _pickle
             checked = {}
             for name, value in namespace.items():
-                if isinstance(value, _Unpicklable):
+                if isinstance(value, (_Unpicklable, _ModuleAlias)):
                     checked[name] = value
                     continue
                 try:
@@ -1122,6 +1238,7 @@ class MixedLM:
         # Pickles written by earlier versions carry neither, and a model whose
         # design was built without missing-data filtering does not need them.
         self.__dict__.setdefault("_design_rows", None)
+        self.__dict__.setdefault("_row_selection_steps", None)
         self.__dict__.setdefault("_formula_namespace", None)
         self.__dict__.setdefault("_design_rebuild_error", None)
 
@@ -1155,8 +1272,21 @@ class MixedLM:
             return None, []
         missing = sorted(v.name for v in ns.values()
                          if isinstance(v, _Unpicklable))
-        usable = {k: v for k, v in ns.items()
-                  if not isinstance(v, _Unpicklable)}
+        usable = {}
+        for key, value in ns.items():
+            if isinstance(value, _Unpicklable):
+                continue
+            if isinstance(value, _ModuleAlias):
+                try:
+                    usable[key] = value.resolve()
+                except Exception:
+                    # The module was importable where the model was fitted and
+                    # is not importable here. Naming it beats a bare NameError
+                    # out of patsy.
+                    missing.append(f"{key} (module {value.module_name})")
+                continue
+            usable[key] = value
+        missing = sorted(missing)
         if not usable:
             return None, missing
         from patsy import EvalEnvironment
@@ -1235,7 +1365,8 @@ class MixedLM:
                 f"with {self.k_fe} ({names} against "
                 f"{list(self.exog_names or [])}). A stateful transform in "
                 f"{self.formula!r} relearned different state; the rebuilt "
-                "design describes a different model and is discarded.")
+                "design describes a different model and is discarded."
+                + self._row_trace())
         expected = list(self.exog_names or [])
         if expected and names != expected:
             raise ValueError(
@@ -1244,7 +1375,21 @@ class MixedLM:
         if n_rows != self.exog.shape[0]:
             raise ValueError(
                 f"rebuilding the design produced {n_rows} rows, but the model "
-                f"was fitted on {self.exog.shape[0]}.")
+                f"was fitted on {self.exog.shape[0]}. This is a row-selection "
+                "inconsistency inside this package, not a problem with your "
+                "formula or your session." + self._row_trace())
+
+    def _row_trace(self) -> str:
+        """How many rows survived each selection step, for an error message.
+
+        A row-count mismatch used to surface as advice about unpicklable
+        transforms, which sent the reader after the wrong thing entirely.
+        """
+        steps = getattr(self, "_row_selection_steps", None)
+        if not steps:
+            return ""
+        return (" Rows after each selection step: "
+                + ", ".join(f"{name} {count}" for name, count in steps) + ".")
 
     def fit_regularized(self, *args: Any, **kwargs: Any) -> MixedLMResults:
         raise NotImplementedError(

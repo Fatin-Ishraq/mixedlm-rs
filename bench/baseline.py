@@ -38,6 +38,37 @@ sys.path.insert(0, str(ROOT / "tests"))
 warnings.simplefilter("always")
 
 
+def _python_sources_digest() -> dict:
+    """Hash the installed *Python* sources, not only the extension.
+
+    The extension's hash was the whole provenance record, and it does not
+    establish what it was claimed to. Every change in the recent reviews was a
+    Python change: an old and a new wrapper import the same compiled
+    extension, report the same version, and produce different numbers. Hashing
+    the modules that are actually imported closes that.
+
+    The digest is over (relative name, content) pairs in sorted order, so it
+    is stable across machines and directories and changes when any module
+    does.
+    """
+    import hashlib
+
+    import mixedlm_rs
+
+    package = pathlib.Path(mixedlm_rs.__file__).resolve().parent
+    files = sorted(q for q in package.glob("*.py"))
+    digest = hashlib.sha256()
+    names = []
+    for path in files:
+        digest.update(path.name.encode("utf-8"))
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+        names.append(path.name)
+    return {
+        "python_sources_sha256": digest.hexdigest() if names else None,
+        "python_sources_files": names,
+    }
+
+
 def _extension_identity() -> dict:
     """Which compiled binary actually produced these numbers.
 
@@ -116,6 +147,7 @@ def environment() -> dict:
         "processor": platform.processor(),
         "dependencies": versions,
         **_extension_identity(),
+        **_python_sources_digest(),
     }
 
 

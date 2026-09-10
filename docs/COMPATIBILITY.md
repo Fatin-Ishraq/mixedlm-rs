@@ -167,15 +167,51 @@ of the above is safe to rely on.
 
 ## Deciding whether to switch
 
-Change the import and run your tests. Then check three things:
+Change the import and run your tests. The checklist below is a *filter*, not a
+warranty: it puts the most common blockers first, and the sections above remain
+the contract. Three checks cannot certify a migration, and an earlier version of
+this page promised exactly that.
 
-1. **Does your model have one grouping factor?** If not, stop here.
-2. **Does your code index results by name** — `result.fe_params["x"]`,
-   `result.cov_re.loc[...]`? Those raise. Switch to the `_labelled` views or
+**Stops the migration outright**
+
+1. **More than one grouping factor**, crossed or nested random effects, or
+   variance components (`vc_formula` / `exog_vc`). Not implemented; they raise.
+2. **Anything other than a linear mixed model** — GLMM families, and
+   `fit_regularized` for L1-penalised fixed effects. Absent.
+
+**Needs a code change before it will run**
+
+3. **Indexing results by name** — `result.fe_params["x"]`,
+   `result.cov_re.loc[...]`. Those raise; use the `_labelled` views or
    positional indexing.
-3. **Do you use `summary().tables`, `as_html()`, `wald_test_terms`,
-   `t_test_pairwise`, or the `bsejac` family?** Those are absent.
+4. **`summary().tables`, `as_html()`, `wald_test_terms`, `t_test_pairwise`,
+   or the `bsejac` family.** Absent.
+5. **`free`** (fixing individual covariance parameters), **`fe_pen` / `cov_pen`**
+   (penalties), and **`profile_re`** (profile-likelihood intervals for a
+   variance). Not implemented; they raise rather than being ignored.
+6. **Arguments accepted and warned about rather than honoured** — `niter_sa`,
+   `do_cg`, `full_output`, `use_sparse`, and statsmodels' optimiser names. Your
+   code keeps running; the option does not do what its name says.
 
-If none of those apply, the import swap really is the whole migration — which
-is what the original claim got right, and what it should have said out loud
-rather than implied for everyone.
+**Runs, but returns something different**
+
+7. **Return types.** `cov_re`, `cov_re_unscaled`, `random_effects` and friends
+   are arrays and dicts where statsmodels returns DataFrames and Series. Code
+   that only computes with them is fine; code that calls DataFrame methods on
+   them is not. See section 2.
+8. **`groups` alignment.** A `groups` Series with a meaningful index is aligned
+   to `data` **by label** here, where statsmodels aligns positionally. If you
+   pass a reordered or pre-subset Series, the two libraries fit different
+   models — and statsmodels' answer is the wrong one. Pass
+   `np.asarray(groups)` to keep positional behaviour explicitly. See "How
+   `groups` and `subset` are aligned".
+9. **Persistence.** Pickling reproduces formula prediction for patsy's own
+   transforms, module-level functions and module aliases, but a formula that
+   closes over a lambda or a local function cannot be restored. See
+   docs/LIMITATIONS.md.
+10. **`score` and `hessian` coordinates**, and `pvalues` always normal-based.
+    Numerically incomparable term-by-term with statsmodels'.
+
+If none of these touch your code, the import swap is the whole migration. If
+any do, this page says what changes — and the tables above, not this list, are
+the complete statement.
