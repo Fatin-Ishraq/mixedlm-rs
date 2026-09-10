@@ -1156,6 +1156,133 @@ def t8():
          "persistence" if not named else f"still omits {named}")
 
 
+# ============================================ RECHECK3.md, blockers 1-3
+def u1():
+    """Infinities are resolved before transform state is learned.
+
+    Four routes to one root cause: an infinity in a fixed predictor, a random
+    predictor, the response, and one produced by a transform rather than
+    supplied. Each changed predictions by ~0.083 across a pickle, silently,
+    because the reconstruction guard compared names and dimensions while the
+    design values differed by 0.05.
+    """
+    rng = np.random.default_rng(16)
+    n = 200
+    g = np.repeat(np.arange(20), 10)
+    x = np.arange(n, dtype=float) / 10 + 1
+    y = 2 + 1.7 * x + rng.normal(size=20)[g] + rng.normal(scale=0.3, size=n)
+    base = pd.DataFrame({"y": y, "x": x, "w": rng.normal(size=n), "g": g})
+    new = pd.DataFrame({"x": [6.0, 10.0, 18.0], "w": [1.0, 2.0, 3.0]})
+
+    gaps = {}
+    for case in ("fixed_inf", "random_inf", "response_inf", "transform_inf"):
+        d = base.copy()
+        formula, re_formula = "y ~ center(x)", None
+        if case == "fixed_inf":
+            d.loc[0, "w"] = np.inf
+            formula += " + w"
+        elif case == "random_inf":
+            d.loc[0, "w"] = np.inf
+            re_formula = "~w"
+        elif case == "response_inf":
+            d.loc[0, "y"] = np.inf
+        else:
+            d["w"] = np.exp(d["w"])
+            d.loc[0, "w"] = 0.0
+            formula += " + np.log(w)"
+        r = mlm.MixedLM.from_formula(formula, d, groups="g",
+                                     re_formula=re_formula,
+                                     missing="drop").fit()
+        before = np.asarray(r.predict(new), float)
+        after = np.asarray(
+            pickle.loads(pickle.dumps(r)).predict(new), float)
+        gaps[case] = float(np.max(np.abs(before - after)))
+    worst = max(gaps.values())
+    return worst == 0.0, f"4 infinity variants, largest prediction gap {worst:.1e}"
+
+
+def u1b():
+    """The rebuild guard compares design values, not just dimensions."""
+    d = pd.DataFrame({"y": np.random.default_rng(1).normal(size=200),
+                      "x": np.arange(200.0) / 10 + 1,
+                      "w": np.random.default_rng(2).normal(size=200),
+                      "g": np.repeat(np.arange(20), 10)})
+    r = mlm.MixedLM.from_formula("y ~ center(x) + w", d, groups="g",
+                                 missing="drop").fit()
+    model = r.model
+    shifted = model.exog.copy()
+    shifted[0, 1] += 0.05                    # the observed magnitude
+    try:
+        model._compare_design("fixed-effect", shifted, model.exog)
+        rejected = False
+    except ValueError as exc:
+        rejected = "same shape and column names" in str(exc)
+    # And an identical design is still accepted.
+    try:
+        model._compare_design("fixed-effect", model.exog.copy(), model.exog)
+        accepts = True
+    except ValueError:
+        accepts = False
+    return rejected and accepts, \
+        "a same-shape design differing by 0.05 is rejected; an equal one is not"
+
+
+def u2():
+    """Only verified release artifacts can be published."""
+    release = read(ROOT / ".github" / "workflows" / "release.yml")
+    import yaml
+    data = yaml.safe_load(release)
+
+    unfiltered = []
+    for name, job in data["jobs"].items():
+        for step in job.get("steps") or []:
+            if not step.get("uses", "").startswith("actions/download-artifact"):
+                continue
+            using = step.get("with") or {}
+            if not using.get("pattern") and not using.get("name"):
+                unfiltered.append(name)
+    gate = "check_release_set.py" in release
+    twine = "twine check" in release
+    named = "release-wheel-" in release and "verified-wheel-" in release
+    script = (ROOT / "scripts" / "check_release_set.py").is_file()
+    ok = not unfiltered and gate and twine and named and script
+    return ok, ("artifacts selected by pattern, hashes checked against the "
+                "verify jobs, twine before upload" if ok else
+                f"unfiltered={unfiltered} gate={gate} twine={twine} "
+                f"named={named}")
+
+
+def u3():
+    """Every published wheel runs on its own architecture."""
+    release = read(ROOT / ".github" / "workflows" / "release.yml")
+    ci = read(ROOT / ".github" / "workflows" / "ci.yml")
+    import yaml
+    data = yaml.safe_load(release)
+    built = {(e["platform"], e["target"]) for e in
+             data["jobs"]["wheels"]["strategy"]["matrix"]["include"]}
+    ran = {(e["platform"], e["target"]): e["runner"] for e in
+           data["jobs"]["verify-wheels"]["strategy"]["matrix"]["include"]}
+    gap = sorted(built - set(ran))
+
+    # macos-13 was retired in December 2025. A comment may mention it; a
+    # runner selection may not.
+    retired = [line.strip() for line in release.splitlines()
+               if "macos-13" in line and not line.strip().startswith("#")]
+
+    # A label is a claim until something runs on it. CI proves both unusual
+    # ones and asserts the machine type.
+    probe = yaml.safe_load(ci)["jobs"]["architectures"]["strategy"]["matrix"]
+    proven = {e["label"] for e in probe["include"]}
+    common = {"ubuntu-latest", "macos-latest", "windows-latest"}
+    unproven = sorted((set(ran.values()) - common) - proven)
+
+    ok = not gap and not retired and not unproven
+    return ok, (f"all {len(built)} wheels executed; unusual labels "
+                f"{sorted(proven)} proven in CI" if ok else
+                f"gap={gap} retired={retired} unproven={unproven}")
+
+
+
 GROUPS = [
     ("REVIEW", [(f"F{i:02d}", fn) for i, fn in enumerate(
         [f01, f02, f03, f04, f05, f06, f07, f08, f09, f10, f11, f12, f13,
@@ -1170,6 +1297,7 @@ GROUPS = [
                  ("S10d", s10d)]),
     ("RECHECK2", [("T1", t1), ("T2", t2), ("T3", t3), ("T4", t4),
                   ("T5", t5), ("T6", t6), ("T7", t7), ("T8", t8)]),
+    ("RECHECK3", [("U1", u1), ("U1b", u1b), ("U2", u2), ("U3", u3)]),
 ]
 
 # What each check is actually evidence of. Reporting a single total invited
@@ -1179,7 +1307,7 @@ GROUPS = [
 # machine. Only the behavioural ones run the code and assert on the answer.
 KIND = {
     "behaviour": {
-        "T1", "T2", "T3", "T6",
+        "T1", "T2", "T3", "T6", "U1", "U1b",
         "F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09", "F10",
         "F11", "F12", "F13", "F14", "F15", "F16", "F17", "F18", "F19", "F20",
         "F21", "F22", "F23", "F24", "F25", "F26", "F27", "F28",
@@ -1187,7 +1315,7 @@ KIND = {
         "S1", "S1b", "S2", "S2b", "S3", "S3b", "S10",
     },
     "release evidence": {"F37", "R1", "S7"},
-    "workflow (not executed)": {"T4", "T5"},
+    "workflow (not executed)": {"T4", "T5", "U2", "U3"},
     "negative control": {"S6"},
 }
 
@@ -1200,7 +1328,8 @@ for group, items in GROUPS:
 
 width = max(len(d) for *_, d in RESULTS)
 print()
-for group in ("REVIEW", "RECHECK", "STAGE13", "RECHECK2"):
+for group in ("REVIEW", "RECHECK", "STAGE13", "RECHECK2",
+              "RECHECK3"):
     rows = [r for r in RESULTS if r[0] == group]
     # Named, not pathed: these documents were an external deliverable and are
     # not in the repository, so printing a repo-relative path would send a
@@ -1208,7 +1337,8 @@ for group in ("REVIEW", "RECHECK", "STAGE13", "RECHECK2"):
     doc = {"REVIEW": "review 1 (REVIEW.md)",
            "RECHECK": "review 2 (RECHECK.md)",
            "STAGE13": "review 3 (STAGE13-REVIEW.md)",
-           "RECHECK2": "review 4 (RECHECK2.md)"}[group]
+           "RECHECK2": "review 4 (RECHECK2.md)",
+           "RECHECK3": "review 5 (RECHECK3.md)"}[group]
     print(f"--- {doc}: {sum(1 for r in rows if r[2])}/{len(rows)} ---")
     for _, label, ok, detail in rows:
         print(f"  {label}  {'PASS' if ok else '**FAIL**':9s} {detail}")
