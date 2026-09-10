@@ -37,7 +37,6 @@ import zipfile
 import numpy as np
 import pandas as pd
 import tomllib
-import yaml
 
 warnings.filterwarnings("ignore")
 ROOT = pathlib.Path.cwd()
@@ -47,14 +46,15 @@ while not (ROOT / "pyproject.toml").exists():
     ROOT = ROOT.parent
 
 sys.path.insert(0, str(ROOT / "tests"))
-for _needed in ("mixedlm_rs", "statsmodels", "patsy"):
+for _needed in ("mixedlm_rs", "statsmodels", "patsy", "yaml"):
     if importlib.util.find_spec(_needed) is None:
         # A bare ModuleNotFoundError here reads as a broken script. It is a
         # missing prerequisite, and the differential findings compare against
         # statsmodels directly, so there is no reduced mode to fall back to.
         raise SystemExit(
             f"cannot verify the findings: {_needed} is not installed. The "
-            "checker fits both implementations and compares them.")
+            "checker fits both implementations and compares them, and reads "
+            "the workflow files to check the release wiring.")
 
 import mixedlm_rs as mlm  # noqa: E402
 import statsmodels.formula.api as smf  # noqa: E402
@@ -1090,6 +1090,8 @@ def t5():
     """Publication is gated on tests for this commit, and on run artifacts."""
     release = read(ROOT / ".github" / "workflows" / "release.yml")
     ci = read(ROOT / ".github" / "workflows" / "ci.yml")
+    import yaml  # named by the prerequisite check above if absent
+
     data = yaml.safe_load(release)
     publish = data["jobs"]["publish"]["needs"]
     required = {"tests", "verify-wheels", "verify-sdist"}
