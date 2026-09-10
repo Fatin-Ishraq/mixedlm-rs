@@ -294,7 +294,7 @@ do `fe_pen`, `cov_pen` and `free`. GLMMs are out of scope.
 ## Is it actually the same?
 
 That is the only question that matters for a drop-in, so it is what the test
-suite is built around — **624 Python tests and 7 Rust tests**, with
+suite is built around — **625 Python tests and 7 Rust tests**, with
 `statsmodels`, `mypy` and the lme4 fixtures installed. Fewer are collected
 without them: the differential comparisons skip at import, so a minimal
 environment collects 398 rather than skipping 178.

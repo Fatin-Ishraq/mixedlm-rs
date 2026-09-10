@@ -1,7 +1,7 @@
 {
- "recorded_at": "2026-09-10T12:27:13",
+ "recorded_at": "2026-09-10T12:48:30",
  "environment": {
-  "commit": "4934d23c50b685ec464e60f717fb572b15e73f98",
+  "commit": "7604203e24b62f2e77bc948209ee16ef95f144c1",
   "working_tree_dirty": false,
   "mixedlm_rs": "0.1.0",
   "python": "3.14.3",
@@ -21,7 +21,7 @@
   "extension_bytes": 359424,
   "package_location": "site-packages/mixedlm_rs",
   "imported_from_checkout": false,
-  "python_sources_sha256": "295287744537495060302f9f91262c463723ba992820d356ba39288f50f49699",
+  "python_sources_sha256": "5b3a6444a24e59f04dba553febfaf74a6cd232ce59904852695032c4d80bc47b",
   "python_sources_files": [
    "__init__.py",
    "_fit.py",
@@ -33,7 +33,7 @@
   "cases": 120,
   "seed_base": 10000,
   "generator": "tests/test_fuzz.py::random_case",
-  "seconds": 81.58773920000021,
+  "seconds": 87.2379106999997,
   "counts": {
    "reference did not converge": 26,
    "we found a better optimum": 42,
@@ -51,7 +51,7 @@
   "cases": 400,
   "seed": 0,
   "generator": "bench/stress_sweep.py::make_case",
-  "seconds": 177.6767175,
+  "seconds": 289.99994999999944,
   "counts": {
    "same optimum": 167,
    "reference did not converge": 99,
@@ -95,15 +95,16 @@
  "quick": false,
  "suites": {
   "pytest": {
-   "returncode": 0,
-   "summary": "620 passed, 4 skipped, 2 warnings in 104.40s (0:01:44)",
-   "collected": 624,
+   "returncode": 1,
+   "summary": "1 failed, 620 passed, 4 skipped, 2 warnings in 124.44s (0:02:04)",
+   "collected": 625,
+   "failed": 1,
    "passed": 620,
    "skipped": 4
   },
   "cargo": {
    "returncode": 0,
-   "summary": "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+   "summary": "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
    "collected": 7
   }
  }
