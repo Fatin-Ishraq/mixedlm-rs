@@ -51,9 +51,9 @@ import pandas as pd
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 warnings.filterwarnings("ignore")
 
-import mixedlm_rs as mlm                                          # noqa: E402
-import statsmodels.formula.api as smf                             # noqa: E402
-import tolerances                                                 # noqa: E402
+import mixedlm_rs as mlm
+import statsmodels.formula.api as smf
+import tolerances
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 OUT = ROOT / "bench" / "performance.json"
