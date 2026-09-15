@@ -40,6 +40,21 @@ No R, no number
 Without an Rscript this exits before measuring anything. It does not fall back
 to the historical lme4 figures: those are already in performance.json, labelled
 as what they are.
+
+A busy machine, no timing
+-------------------------
+The first full run of this script was recorded while other jobs held the CPU
+at 100%. Every agreement check passed and it exited 0 -- with lme4 taking
+longer on 200,000 rows than on 500,264, and this package ten times slower than
+its own earlier record at the largest size. Contention is not constant, so it
+distorts even the *ratios* between packages, and nothing in the output said
+so.
+
+So before each timed case the background CPU load is sampled with nothing of
+ours running, and recorded. Above `MAX_BACKGROUND_BUSY` the timing experiment
+stops and writes no timings. Accuracy is unaffected by load -- an optimiser's
+end point does not depend on how fast it got there -- so the two experiments
+are recorded separately (`--part`), and a busy machine costs only the timings.
 """
 
 from __future__ import annotations
@@ -77,6 +92,62 @@ ACCURACY_SEED_BASE = 10_000                # as differential_table.py
 # statsmodels is timed once above this, as in performance.py: a single fit is
 # minutes, and repeating it sharpens nothing about a ratio in the hundreds.
 SM_SINGLE_REP_ABOVE = 50_000
+# Fraction of all logical CPUs busy with *other* work, sampled while nothing of
+# ours runs. All three packages parallelise (rayon here, BLAS under statsmodels
+# and lme4), so a machine that is a sixth occupied is already not the machine
+# the numbers claim to describe.
+MAX_BACKGROUND_BUSY = 0.15
+LOAD_SAMPLE_SECONDS = 2.0
+
+
+class BusyMachine(RuntimeError):
+    pass
+
+
+def cpu_busy_fraction(seconds=LOAD_SAMPLE_SECONDS):
+    """System-wide CPU busy fraction over `seconds`, or None if unmeasurable."""
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        class FileTime(ctypes.Structure):
+            _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+        def snapshot():
+            idle, kernel, user = FileTime(), FileTime(), FileTime()
+            ctypes.windll.kernel32.GetSystemTimes(
+                ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user))
+            value = lambda ft: (ft.high << 32) | ft.low      # noqa: E731
+            # Kernel time includes idle time on Windows.
+            return value(idle), value(kernel) + value(user)
+
+        idle0, total0 = snapshot()
+        time.sleep(seconds)
+        idle1, total1 = snapshot()
+    elif os.path.exists("/proc/stat"):
+        def snapshot():
+            with open("/proc/stat") as fh:
+                fields = [int(v) for v in fh.readline().split()[1:]]
+            return fields[3] + fields[4], sum(fields)       # idle + iowait
+
+        idle0, total0 = snapshot()
+        time.sleep(seconds)
+        idle1, total1 = snapshot()
+    else:
+        return None
+    total = total1 - total0
+    return None if total <= 0 else 1.0 - (idle1 - idle0) / total
+
+
+def require_quiet(case, samples):
+    busy = cpu_busy_fraction()
+    samples.append({"case": case, "background_busy": busy})
+    if busy is not None and busy > MAX_BACKGROUND_BUSY:
+        raise BusyMachine(
+            f"before {case}: {busy:.0%} of the CPU is busy with other work "
+            f"(limit {MAX_BACKGROUND_BUSY:.0%}). Timings taken now would "
+            "describe the contention, not the packages.")
+    return busy
 
 
 def find_rscript() -> str | None:
@@ -151,9 +222,10 @@ def timing(rscript, cases, reps, workdir):
         manifest.append({"case": name, "file": str(path), "re": "slope",
                          "reml": "TRUE", "reps": reps})
 
-    rows, fits = [], {}
+    rows, fits, load = [], {}, []
     for name, path, ngroups, with_sm in fixtures:
         df = pd.read_csv(path)
+        require_quiet(f"{name} (python)", load)
         ours_t, ours = time_reps(
             lambda: mlm.mixedlm("y ~ x1 + x2", df, groups=df["g"],
                                 re_formula="~x1").fit(), reps)
@@ -179,8 +251,12 @@ def timing(rscript, cases, reps, workdir):
               f"statsmodels {sm_txt}", flush=True)
         rows.append(row)
 
+    # lme4 runs every case in one R process, so the machine is checked on both
+    # sides of it: load that arrives mid-run shows up in the sample after.
     print("  lme4 ...", flush=True)
+    require_quiet("lme4 batch (before)", load)
     lme4, versions = run_lme4(rscript, manifest, workdir, "timing")
+    require_quiet("lme4 batch (after)", load)
     problems = []
     for row in rows:
         mine = lme4[lme4.case == row["case"]]
@@ -211,7 +287,7 @@ def timing(rscript, cases, reps, workdir):
                                 f"{gap['deviance_gap']:.3g} below lme4")
         print(f"  {row['n']:>8,d} rows  lme4 {row['lme4']['seconds']:.4f}s",
               flush=True)
-    return rows, versions, problems
+    return rows, versions, problems, load
 
 
 # ----------------------------------------------------------------- accuracy
@@ -260,8 +336,20 @@ def accuracy(rscript, seeds, workdir):
     return rows, versions
 
 
+def block_environment(reps, versions):
+    env = environment(reps)
+    env["mixedlm_rs_path"] = mlm.__file__
+    env["dependencies"].update({"R": versions["R"], "lme4": versions["lme4"]})
+    env["lme4_optimizer"] = "lmer defaults"
+    return env
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--part", choices=("all", "timing", "accuracy"),
+                    default="all",
+                    help="record one experiment and keep the other block of "
+                         "an existing output file as it is")
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--out", default=str(OUT))
@@ -274,51 +362,69 @@ def main() -> int:
               "remain the only lme4 record.", file=sys.stderr)
         return 2
 
+    out = pathlib.Path(args.out)
+    payload = {"timing": None, "accuracy": None}
+    if args.part != "all" and out.is_file():
+        payload.update(json.loads(out.read_text(encoding="utf-8")))
+
     cases = CASES[:3] if args.quick else CASES
     seeds = 20 if args.quick else ACCURACY_SEEDS
-    env = environment(args.reps)
-    env["mixedlm_rs_path"] = mlm.__file__
-    print(f"commit {env['commit']} (dirty={env['working_tree_dirty']}), "
-          f"mixedlm-rs {env['mixedlm_rs']} from {mlm.__file__}", flush=True)
+    print(f"mixedlm-rs {mlm.__version__} from {mlm.__file__}", flush=True)
+    status, problems = 0, []
 
     with tempfile.TemporaryDirectory() as work:
-        print("\ntiming", flush=True)
-        timing_rows, versions, problems = timing(rscript, cases, args.reps,
-                                                 work)
-        print("\naccuracy", flush=True)
-        accuracy_rows, _ = accuracy(rscript, seeds, work)
+        if args.part in ("all", "timing"):
+            print("\ntiming", flush=True)
+            try:
+                rows, versions, problems, load = timing(rscript, cases,
+                                                        args.reps, work)
+                payload["timing"] = {
+                    "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "environment": block_environment(args.reps, versions),
+                    "quick": args.quick,
+                    "method": "same CSV fixture read by all three packages; "
+                              "timed from an in-memory data frame to a fitted "
+                              "model; minimum of the repetitions; lme4 timed "
+                              "inside R with Sys.time()",
+                    "max_background_busy": MAX_BACKGROUND_BUSY,
+                    "background_load": load,
+                    "rows": rows,
+                }
+            except BusyMachine as exc:
+                # Nothing from this attempt is kept, including a previous
+                # timing block: a file that still showed old timings beside a
+                # refusal would invite reading them as current.
+                payload["timing"] = None
+                print(f"\ntiming refused: {exc}", file=sys.stderr)
+                status = 3
 
-    env["dependencies"].update({"R": versions["R"], "lme4": versions["lme4"]})
-    env["lme4_optimizer"] = "lmer defaults"
-    payload = {
-        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "environment": env,
-        "quick": args.quick,
-        "timing": {
-            "method": "same CSV fixture read by all three packages; timed from "
-                      "an in-memory data frame to a fitted model; minimum of "
-                      "the repetitions; lme4 timed inside R with Sys.time()",
-            "rows": timing_rows,
-        },
-        "accuracy": {
-            "method": "fixtures from tests/test_fuzz.py random_case, seeds "
-                      f"{ACCURACY_SEED_BASE}..{ACCURACY_SEED_BASE + seeds - 1},"
-                      " as bench/differential_table.py; deviance_gap_to_lme4 "
-                      "is 2 * (loglik - lme4 loglik), positive means a higher "
-                      "likelihood than lme4 found",
-            "rows": accuracy_rows,
-        },
-    }
-    pathlib.Path(args.out).write_text(json.dumps(payload, indent=1) + "\n",
-                                      encoding="utf-8")
-    print(f"\nwrote {args.out}")
+        if args.part in ("all", "accuracy"):
+            print("\naccuracy", flush=True)
+            rows, versions = accuracy(rscript, seeds, work)
+            payload["accuracy"] = {
+                "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "environment": block_environment(1, versions),
+                "quick": args.quick,
+                "tolerance": {"deviance_abs": tolerances.DEVIANCE_ABS,
+                              "source": "bench/tolerances.py"},
+                "method": "fixtures from tests/test_fuzz.py random_case, "
+                          f"seeds {ACCURACY_SEED_BASE}.."
+                          f"{ACCURACY_SEED_BASE + seeds - 1}, as "
+                          "bench/differential_table.py; deviance_gap_to_lme4 "
+                          "is 2 * (loglik - lme4 loglik), positive means a "
+                          "higher likelihood than lme4 found",
+                "rows": rows,
+            }
+
+    out.write_text(json.dumps(payload, indent=1) + "\n", encoding="utf-8")
+    print(f"\nwrote {out}")
     if problems:
         print("\nthe timed fits do not agree with lme4; no timing is "
               "reportable:")
         for line in problems:
             print(f"  - {line}")
         return 1
-    return 0
+    return status
 
 
 if __name__ == "__main__":
