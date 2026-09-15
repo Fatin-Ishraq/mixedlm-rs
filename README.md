@@ -215,6 +215,13 @@ that its estimates are wrong.
 
 The recorded comparison on **120 randomised fixtures** reports:
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Fatin-Ishraq/mixedlm-rs/main/docs/assets/outcomes-dark.svg">
+  <img src="https://raw.githubusercontent.com/Fatin-Ishraq/mixedlm-rs/main/docs/assets/outcomes-light.svg"
+       alt="The same 120 fixtures as one bar: 42 better optimum, 52 same optimum, 26 statsmodels did not converge, 0 worse."
+       width="100%">
+</picture>
+
 | Outcome | Count |
 |---|---:|
 | statsmodels did not converge | **26** |
@@ -234,7 +241,7 @@ check. These are finite test suites, not estimates of failure rates in general u
 
 Both experiments are recorded in
 [`bench/baseline.json`](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/bench/baseline.json)
-at commit `55c20ac`. The
+at commit `40795e0`. The
 [correctness report](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/docs/CORRECTNESS.md)
 provides the reference fits, thresholds, generators and known difficult cases.
 
@@ -255,6 +262,13 @@ printing a summary.
 | 200,000 | 50,000 | 102.791 s | 0.0732 s | 1404x |
 | 500,264 | 125,066 | Not measured | 0.218 s | — |
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Fatin-Ishraq/mixedlm-rs/main/docs/assets/scaling-dark.svg">
+  <img src="https://raw.githubusercontent.com/Fatin-Ishraq/mixedlm-rs/main/docs/assets/scaling-light.svg"
+       alt="Fit time against grouping factor levels, log-log. statsmodels rises from 0.3 to 103 seconds; mixedlm-rs stays between 0.008 and 0.073 seconds."
+       width="100%">
+</picture>
+
 **Measurement conditions:** Windows 11, AMD Ryzen 5 5600G, 12 logical CPUs,
 Python 3.14.3 and statsmodels 0.15.0. mixedlm-rs reports the minimum of three
 runs. statsmodels also uses three runs through 40,000 observations, but only
@@ -268,7 +282,7 @@ and likelihoods passed the benchmark's agreement checks. The workload favors
 many small groups; speedups depend on model shape, data, dependencies and
 hardware, and should not be assumed for every analysis.
 
-The measurements were recorded on 2026-09-10 at commit `b34a88a`.
+The measurements were recorded on 2026-09-10 at commit `4124cf9`.
 [`bench/performance.json`](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/bench/performance.json)
 contains all repetitions, dependency versions, thread settings and the
 extension hash. Reproduce the comparison with
