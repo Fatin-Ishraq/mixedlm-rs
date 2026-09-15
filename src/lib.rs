@@ -13,7 +13,10 @@ mod linalg;
 mod lmm;
 mod optim;
 
-use lmm::{evaluate, n_theta, theta_index, theta_to_lambda, LmmData};
+use lmm::{
+    conditional_covariances, evaluate, n_theta, scalar_hessian, theta_index, theta_to_lambda,
+    Kernel, KernelRequest, LmmData, Mode,
+};
 use optim::{minimize, OptSettings};
 
 /// Pre-computed cross-products for one grouping factor.
@@ -22,51 +25,94 @@ pub struct LmmCore {
     data: LmmData,
 }
 
+/// Flat, C-contiguous views of `y`, `X`, `Z` and the codes, with the shape
+/// checks every constructor needs.
+struct Rows<'a> {
+    y: &'a [f64],
+    x: &'a [f64],
+    z: &'a [f64],
+    codes: &'a [i64],
+    p: usize,
+    q: usize,
+}
+
+fn rows<'a>(
+    y: &'a PyReadonlyArray1<'_, f64>,
+    x: &'a PyReadonlyArray2<'_, f64>,
+    z: &'a PyReadonlyArray2<'_, f64>,
+    codes: &'a PyReadonlyArray1<'_, i64>,
+) -> PyResult<Rows<'a>> {
+    let yv = y.as_slice()?;
+    let xs = x.as_array();
+    let zs = z.as_array();
+    let cv = codes.as_slice()?;
+    let n = yv.len();
+    let p = xs.shape()[1];
+    let q = zs.shape()[1];
+    // Flat row-major slices: the accumulation is O(n * (p^2 + qp + q^2)) scalar
+    // work, and going through bounds-checked 2-D ndarray indexing for every
+    // element of it costs several times the arithmetic.
+    let xv = xs
+        .to_slice()
+        .ok_or_else(|| PyValueError::new_err("X must be C-contiguous"))?;
+    let zv = zs
+        .to_slice()
+        .ok_or_else(|| PyValueError::new_err("Z must be C-contiguous"))?;
+    if xs.shape()[0] != n || zs.shape()[0] != n || cv.len() != n {
+        return Err(PyValueError::new_err(
+            "y, X, Z and group codes must agree on the row count",
+        ));
+    }
+    Ok(Rows {
+        y: yv,
+        x: xv,
+        z: zv,
+        codes: cv,
+        p,
+        q,
+    })
+}
+
 #[pymethods]
 impl LmmCore {
     /// Build the theta-independent cross-products in a single pass over the rows.
     ///
-    /// `codes` must be contiguous group labels in `0..n_groups`.
+    /// `codes` must be contiguous group labels in `0..n_groups`. `evaluator`
+    /// selects the kernel: `"auto"` (the default) aggregates groups with
+    /// identical `Z_i'Z_i` when that pays, `"blocks"`, `"aggregated"` and
+    /// `"streaming"` force one. All of them compute the same criterion.
     #[new]
+    #[pyo3(signature = (y, x, z, codes, n_groups, evaluator="auto"))]
     fn new(
+        py: Python<'_>,
         y: PyReadonlyArray1<f64>,
         x: PyReadonlyArray2<f64>,
         z: PyReadonlyArray2<f64>,
         codes: PyReadonlyArray1<i64>,
         n_groups: usize,
+        evaluator: &str,
     ) -> PyResult<Self> {
-        let y = y.as_slice()?;
-        let xs = x.as_array();
-        let zs = z.as_array();
-        let codes = codes.as_slice()?;
+        let request = match evaluator {
+            "auto" => KernelRequest::Auto,
+            "blocks" => KernelRequest::Force(Kernel::Blocks),
+            "aggregated" => KernelRequest::Force(Kernel::Classes),
+            "streaming" => KernelRequest::Force(Kernel::Streaming),
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "evaluator must be 'auto', 'blocks', 'aggregated' or 'streaming', got {other:?}"
+                )))
+            }
+        };
+        let r = rows(&y, &x, &z, &codes)?;
+        let (n, p, q, m) = (r.y.len(), r.p, r.q, n_groups);
 
-        let n = y.len();
-        let p = xs.shape()[1];
-        let q = zs.shape()[1];
-        let m = n_groups;
-
-        // Flat row-major slices: the accumulation below is O(n * (p^2 + qp + q^2))
-        // scalar work, and going through bounds-checked 2-D ndarray indexing for
-        // every element of it costs several times the arithmetic.
-        let xv = xs
-            .as_slice()
-            .ok_or_else(|| PyValueError::new_err("X must be C-contiguous"))?;
-        let zv = zs
-            .as_slice()
-            .ok_or_else(|| PyValueError::new_err("Z must be C-contiguous"))?;
-
-        if xs.shape()[0] != n || zs.shape()[0] != n || codes.len() != n {
-            return Err(PyValueError::new_err(
-                "y, X, Z and group codes must agree on the row count",
-            ));
-        }
         if m == 0 {
             return Err(PyValueError::new_err("n_groups must be positive"));
         }
-        // A zero-width design reaches a zero-size rayon chunk downstream, and a
-        // q of zero makes `theta` empty, which every evaluate() path then
-        // indexes. Both used to abort the process rather than raise, because
-        // this crate is built with panic="abort". Refuse them at the boundary.
+        // A zero-width design reaches a zero-size chunk downstream, and a q of
+        // zero makes `theta` empty, which every evaluate() path then indexes.
+        // Both used to abort the process rather than raise, because this crate
+        // is built with panic="abort". Refuse them at the boundary.
         if p == 0 {
             return Err(PyValueError::new_err("X must have at least one column"));
         }
@@ -80,7 +126,7 @@ impl LmmCore {
         // wrap and under-allocate. Check rather than trust.
         let too_big = m
             .checked_mul(q)
-            .and_then(|v| v.checked_mul(p.max(q)))
+            .and_then(|v| v.checked_mul(2 * (p + 1).max(q) + 2))
             .is_none();
         if too_big {
             return Err(PyValueError::new_err(
@@ -88,69 +134,28 @@ impl LmmCore {
             ));
         }
 
-        let mut xtx = vec![0.0; p * p];
-        let mut xty = vec![0.0; p];
-        let mut yty = 0.0;
-        let mut ztz = vec![0.0; m * q * q];
-        let mut ztx = vec![0.0; m * q * p];
-        let mut zty = vec![0.0; m * q];
+        let data = py
+            .detach(|| LmmData::from_rows(r.y, r.x, r.z, r.codes, p, q, m, request))
+            .map_err(PyValueError::new_err)?;
+        Ok(Self { data })
+    }
 
-        for r in 0..n {
-            let g = codes[r];
-            if g < 0 || (g as usize) >= m {
-                return Err(PyValueError::new_err(format!(
-                    "group code {g} out of range 0..{m}"
-                )));
-            }
-            let g = g as usize;
-            let yr = y[r];
-            yty += yr * yr;
-
-            let xrow = &xv[r * p..r * p + p];
-            let zrow = &zv[r * q..r * q + q];
-
-            for a in 0..p {
-                let xa = xrow[a];
-                xty[a] += xa * yr;
-                let dst = &mut xtx[a * p..a * p + p];
-                for b in 0..p {
-                    dst[b] += xa * xrow[b];
-                }
-            }
-            let ztz_g = &mut ztz[g * q * q..(g + 1) * q * q];
-            let zty_g = &mut zty[g * q..(g + 1) * q];
-            for a in 0..q {
-                let za = zrow[a];
-                zty_g[a] += za * yr;
-                let dst = &mut ztz_g[a * q..a * q + q];
-                for b in 0..q {
-                    dst[b] += za * zrow[b];
-                }
-            }
-            let ztx_g = &mut ztx[g * q * p..(g + 1) * q * p];
-            for a in 0..q {
-                let za = zrow[a];
-                let dst = &mut ztx_g[a * p..a * p + p];
-                for b in 0..p {
-                    dst[b] += za * xrow[b];
-                }
-            }
-        }
-
-        Ok(Self {
-            data: LmmData {
-                n,
-                p,
-                q,
-                m,
-                xtx,
-                xty,
-                yty,
-                ztz,
-                ztx,
-                zty,
-            },
-        })
+    /// The same design with a new response, reusing every design-only product.
+    ///
+    /// `x`, `z` and `codes` must be the arrays this core was built from.
+    fn with_response(
+        &self,
+        py: Python<'_>,
+        y: PyReadonlyArray1<f64>,
+        x: PyReadonlyArray2<f64>,
+        z: PyReadonlyArray2<f64>,
+        codes: PyReadonlyArray1<i64>,
+    ) -> PyResult<Self> {
+        let r = rows(&y, &x, &z, &codes)?;
+        let data = py
+            .detach(|| self.data.with_response(r.y, r.x, r.z, r.codes))
+            .map_err(PyValueError::new_err)?;
+        Ok(Self { data })
     }
 
     #[getter]
@@ -173,6 +178,19 @@ impl LmmCore {
     fn n_theta(&self) -> usize {
         n_theta(self.data.q)
     }
+    /// The kernel in use: `"blocks"`, `"aggregated"` or `"streaming"`.
+    #[getter]
+    fn evaluator(&self) -> &'static str {
+        match (self.data.kernel, &self.data.classes) {
+            (Kernel::Classes, None) => Kernel::Blocks.name(),
+            (k, _) => k.name(),
+        }
+    }
+    /// Number of distinct `Z_i'Z_i` classes, when the aggregated kernel is used.
+    #[getter]
+    fn n_classes(&self) -> Option<usize> {
+        self.data.classes.as_ref().map(|c| c.k)
+    }
 
     /// Profiled deviance at `theta`. Returns `inf` for an infeasible `theta`.
     ///
@@ -183,7 +201,7 @@ impl LmmCore {
     fn deviance(&self, py: Python<'_>, theta: Vec<f64>, reml: bool) -> PyResult<f64> {
         self.check_theta(&theta)?;
         Ok(py.detach(|| {
-            evaluate(&self.data, &theta, reml, false)
+            evaluate(&self.data, &theta, reml, Mode::Criterion)
                 .map(|e| e.deviance)
                 .unwrap_or(f64::INFINITY)
         }))
@@ -199,12 +217,56 @@ impl LmmCore {
     ) -> PyResult<(f64, Vec<f64>)> {
         self.check_theta(&theta)?;
         let nth = n_theta(self.data.q);
-        Ok(
-            py.detach(|| match evaluate(&self.data, &theta, reml, true) {
+        Ok(py.detach(
+            || match evaluate(&self.data, &theta, reml, Mode::Gradient) {
                 Some(e) => (e.deviance, e.grad),
                 None => (f64::INFINITY, vec![f64::NAN; nth]),
-            }),
-        )
+            },
+        ))
+    }
+
+    /// Analytic second derivative of the criterion in `theta`, for `q = 1`.
+    ///
+    /// Returns `None` when `q > 1` (no analytic Hessian is implemented there)
+    /// and `nan` for an infeasible `theta`.
+    #[pyo3(signature = (theta, reml=true))]
+    fn deviance_hessian(
+        &self,
+        py: Python<'_>,
+        theta: Vec<f64>,
+        reml: bool,
+    ) -> PyResult<Option<f64>> {
+        self.check_theta(&theta)?;
+        if self.data.q != 1 {
+            return Ok(None);
+        }
+        Ok(Some(py.detach(|| {
+            scalar_hessian(&self.data, theta[0], reml)
+                .map(|(_, _, h)| h)
+                .unwrap_or(f64::NAN)
+        })))
+    }
+
+    /// `Var(b_i | y)` for every group at `theta`, shape `(m, q, q)`, on the
+    /// core's own (possibly rescaled) random-effects coordinates.
+    #[pyo3(signature = (theta, reml=true))]
+    fn conditional_covariances<'py>(
+        &self,
+        py: Python<'py>,
+        theta: Vec<f64>,
+        reml: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.check_theta(&theta)?;
+        let d = &self.data;
+        let out = py
+            .detach(|| {
+                let e = evaluate(d, &theta, reml, Mode::Criterion)?;
+                conditional_covariances(d, &theta, e.sigma2)
+            })
+            .ok_or_else(|| PyRuntimeError::new_err("theta is infeasible"))?;
+        Ok(PyArray1::from_vec(py, out)
+            .reshape([d.m, d.q, d.q])?
+            .into_any())
     }
 
     /// Lower bounds on `theta`: diagonal entries >= 0, off-diagonals free.
@@ -261,7 +323,9 @@ impl LmmCore {
             let mut best: Option<optim::OptResult> = None;
             for chunk in starts.chunks(nth) {
                 let r = minimize(
-                    |t: &[f64]| evaluate(&self.data, t, reml, true).map(|e| (e.deviance, e.grad)),
+                    |t: &[f64]| {
+                        evaluate(&self.data, t, reml, Mode::Gradient).map(|e| (e.deviance, e.grad))
+                    },
                     chunk,
                     &lower,
                     &settings,
@@ -316,7 +380,8 @@ impl LmmCore {
         opt: Option<&optim::OptResult>,
     ) -> PyResult<Py<PyDict>> {
         let d = &self.data;
-        let e = evaluate(d, theta, reml, true)
+        let e = py
+            .detach(|| evaluate(d, theta, reml, Mode::Full))
             .ok_or_else(|| PyRuntimeError::new_err("theta is infeasible"))?;
 
         let q = d.q;
@@ -351,8 +416,8 @@ impl LmmCore {
         let out = PyDict::new(py);
         out.set_item("theta", PyArray1::from_vec(py, theta.to_vec()))?;
         out.set_item("deviance", e.deviance)?;
-        out.set_item("grad", PyArray1::from_vec(py, e.grad.clone()))?;
-        out.set_item("beta", PyArray1::from_vec(py, e.beta.clone()))?;
+        out.set_item("grad", PyArray1::from_vec(py, e.grad))?;
+        out.set_item("beta", PyArray1::from_vec(py, e.beta))?;
         out.set_item(
             "cov_beta",
             PyArray2::from_vec2(py, &reshape(&cov_beta, p, p))?,
@@ -364,7 +429,7 @@ impl LmmCore {
             "random_effects",
             PyArray1::from_vec(py, b_all).reshape([d.m, q])?,
         )?;
-        out.set_item("u", PyArray1::from_vec(py, e.u.clone()).reshape([d.m, q])?)?;
+        out.set_item("u", PyArray1::from_vec(py, e.u).reshape([d.m, q])?)?;
         out.set_item("sigma2", e.sigma2)?;
         out.set_item("sigma", e.sigma2.sqrt())?;
         out.set_item("pwrss", e.pwrss)?;

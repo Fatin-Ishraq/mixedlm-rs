@@ -78,8 +78,10 @@ ML:    d(theta) = log|L|^2 + n     (1 + log(2 pi r^2 / n))
 REML:  d(theta) = log|L|^2 + log|RX|^2 + (n-p) (1 + log(2 pi r^2 / (n-p)))
 ```
 
-`beta` and `sigma^2` fall out in closed form at the optimum, via the
-normal-equation identity `r^2 = y'y - beta'(X'y) - u'(Lambda' Z'y)`.
+`beta` and `sigma^2` fall out in closed form at the optimum. With `c_u` the
+block-wise `L^-1 Lambda' Z'y` and `h = X'y - sum RZX'c_u`, the residual is
+`r^2 = y'y - ||c_u||^2 - ||R_X^-T h||^2`, which needs nothing from a second pass
+over the groups; see *Evaluation modes* below.
 
 ### The block-diagonal shortcut
 
@@ -153,6 +155,19 @@ between-batch variance of zero), so the bound cannot be forbidden. Instead,
 whenever a diagonal entry lands on it, a few positive values along that
 coordinate are probed and the fit restarted if any is better.
 
+For a scalar random effect the escape works in `t = theta^2` instead, where
+the bound is *not* stationary: the one-sided derivative `f'(0) = D''(0)/2` is
+negative exactly when moving off zero improves the fit, and `D''` is
+available analytically. The criterion is scanned over eight decades of
+`theta` (criterion-only calls, about a microsecond each on an aggregated
+core), every grid minimum better than the bound is re-optimised, and the
+probe ladder above remains the fallback when the scan cannot vouch for the
+result. Across the 120 differential and 400 stress fixtures it reached the
+ladder's optimum on every scalar fit, to within the criterion's own rounding on
+near-collinear designs, and cut the optimiser's evaluations on scalar fits
+from 15 to 2 at a boundary optimum and from 27-35 to 12-13 at an interior
+one.
+
 **Predictor scaling.** The random-effects design is internally rescaled to unit
 column RMS. This is an *exact* reparameterisation, not an approximation:
 `Z -> Z D^-1` with `Lambda -> D Lambda` leaves `Lambda' Z'Z Lambda + I`
@@ -168,12 +183,15 @@ accumulator temporaries. At 125,000 groups that is roughly a million allocations
 per evaluation, and around ten million per fit.
 
 Every per-group intermediate now lives in one flat buffer of
-`m * (3q^2 + 2qp + q)` doubles, allocated once per evaluation and split per group
-with `split_at_mut`. Intermediates are staged in place: `A` is built directly in
-the slot that will hold its Cholesky factor, and `W` is staged in the slot that
-becomes `L^-1 W`. Accumulators live in rayon `fold` state — one set per thread,
-not one per group — and `RZX'RZX` is accumulated with a direct loop rather than
-by forming a `p x p` temporary.
+`m * (3q^2 + 2qp + q)` doubles, split per group with `split_at_mut`, and taken
+from a small pool on the core rather than allocated per evaluation.
+Intermediates are staged in place: `A` is built directly in the slot that
+will hold its Cholesky factor, and `W` is staged in the slot that becomes
+`L^-1 W`. Accumulators belong to fixed-size chunks of groups — not to each
+group, and not to rayon's work-stealing splits, which is what an earlier
+version of this paragraph wrongly called "one set per thread" — and
+`RZX'RZX` is accumulated with a direct loop rather than by forming a `p x p`
+temporary.
 
 | groups | one objective evaluation, before | after | |
 |---:|---:|---:|---|
@@ -185,14 +203,106 @@ Two of the six blocks were then dropped altogether. Because `A = L L'`, both
 `A^-1 = L^-T L^-1` and `B = A^-1 W = L^-T (L^-1 W) = L^-T rzx` can be rebuilt in
 pass 2 from `l` and `rzx`. The stride falls from `3q^2 + 2qp + q` to
 `2q^2 + qp + q` — 26 doubles per group to 16 at `q = 2, p = 3`, or 26.0 MB to
-16.0 MB per evaluation at 125,066 groups. A deviance-only call now never forms
-`A^-1` at all, which is why the criterion-only evaluation drops a further 16%.
+16.0 MB per evaluation at 125,066 groups. A criterion-only call now uses no
+per-group buffer at all; see below.
 
 Objective evaluations are 80%+ of a fit, so this is most of the end-to-end
 number. It also changed the story the staged benchmark tells: the Rust core was
 measured at 1.5x over batched NumPy before this change, and 14.6x on the
 current, fairer staging. The allocator had been hiding what the compiled core
 was worth.
+
+## Exact aggregation, evaluation modes and deterministic scheduling
+
+These came out of `.review/OPTIMIZATION-ROADMAP.md`. Each is an exact
+rearrangement of the same criterion, checked against the independent dense
+implementation and against the other kernels in `tests/test_kernels.py`, and
+measured phase by phase with `bench/phases.py` (results in
+`bench/phases.json`: this build against the pre-change one, alternating
+rounds, 1 and 12 rayon threads, BLAS pinned to one).
+
+**The augmented Schur form.** With `v_i = [Z_i'X | Z_i'y]` and
+`P_i = Lambda A_i^-1 Lambda'`, the profiled system is
+`K = [X y]'[X y] - sum_i v_i' P_i v_i`. Its leading block is the fixed-effect
+system `H`, and `pwrss = c - h'H^-1 h`. Because `beta` minimises `e'Ke` over
+`e = [-beta, 1]`, `d(pwrss) = e' dK e` and `d(ldRX2) = tr(H^-1 dH)`, with
+`dP_k = F_k + F_k'`, `F_k = e_r (Lambda A^-1)[:,c]' - (Lambda A^-1)[:,c] (S P)[r,:]`.
+
+**Aggregation (`evaluator="aggregated"`).** `P_i` depends on a group only
+through `S_i = Z_i'Z_i`, so groups with bit-identical `S_i` contribute
+`sum_ab P_ab T[a,b]`, where `T[a,b] = sum_i v_i[a]' v_i[b]` is summed once, at
+construction. An evaluation then costs the number of *distinct* `Z_i'Z_i`,
+not the number of groups. That is one class for a balanced random intercept,
+and at most about `sqrt(2n)` for any random intercept (the distinct group
+sizes cannot sum to more than `n`). It is one class too for a random slope
+over a repeated visit schedule. The core detects classes when it is built and
+uses them when they are few enough to pay; a continuous random slope has no
+repetition, gives up after a few thousand groups, and keeps the block kernel.
+
+| 125,066 groups, 1 thread | gradient, before | after | whole fit, before | after |
+|---|---:|---:|---:|---:|
+| balanced random intercept | 18.8 ms | 0.0014 ms | 204 ms | 47 ms |
+| random intercept, 1-8 rows per group | 18.5 ms | 0.0019 ms | 226 ms | 56 ms |
+| intercept + slope in visit number | 33.8 ms | 0.0022 ms | 442 ms | 69 ms |
+
+The whole fit does not shrink with the kernel: what remains is the design
+conditioning, the core's construction and the one full solution.
+
+**Streaming (`evaluator="streaming"`).** The same form one group at a time:
+a single pass accumulating `K` and every `dK_k`, with no per-group buffer. It
+does more arithmetic per group than the block kernel: level with it at `q = 2,
+p = 3` on 12 threads (3.4 ms against 3.6 ms per gradient, 125,066 groups),
+slower on one thread (22.3 ms against 17.2 ms), and four times slower at
+`p = 30` (80 ms against 20 ms), where its `(p+1)^2` accumulators per `theta`
+entry dominate. It is available but never chosen automatically.
+
+**Evaluation modes.** A criterion-only call (`deviance`) makes one pass, stores
+nothing per group and forms no inverse; a gradient call skips the random
+effects and forms `(X'V^-1X)^-1` only under REML; only `solution` forms
+everything. The one-pass residual is a difference of large sums, so its
+accumulators are Neumaier-compensated. Without that, a fixture's last line
+search went uphill by a few ulps and L-BFGS-B stopped "abnormally" after 38
+evaluations instead of 10.
+
+**Scheduling.** Work is split into chunks sized from the dimensions alone,
+and chunk results are summed in index order, so the criterion is
+bit-for-bit identical on 1 thread and on 12. Below about 250,000 flops of
+total work it runs serially. The previous rayon `fold`/`reduce` followed the
+work-stealing splits: on the degenerate stress case 252 it returned a
+different optimum on each of seven runs, and on one fixture a thread-count change moved
+the optimiser from 9 evaluations to 20. The `q = 1, 2, 3` kernels are compiled
+with `q` as a constant; larger `q` uses the generic loops.
+
+| continuous random slope, 125,066 groups | before | after |
+|---|---:|---:|
+| gradient, 1 thread | 34.3 ms | 16.9 ms |
+| gradient, 12 threads | 7.7 ms | 3.9 ms |
+| whole fit, 12 threads | 145 ms | 98 ms |
+| 18 groups, gradient, 12 threads | 0.033 ms | 0.004 ms |
+
+**Construction.** One triangle of `X'X` and `Z_i'Z_i`, then mirrored; with
+more than one thread, rows are counting-sorted by group and accumulated over
+disjoint ranges of groups, in row order within a group, so the sums match
+the serial loop's. 13.2 ms to 10.4 ms at 125,066 groups on 12 threads, and
+17.7 ms to 9.1 ms at `p = 30`. On one thread it is level with before, except
+that finding classes on a repeated design costs 2.5-7 ms, repaid by the
+first evaluation.
+
+**Reuse.** `MixedLM` keeps the response-independent work -- column scales,
+the scaled design, and a template core -- keyed on a checksum of its design
+arrays, so an ML refit after a REML fit rebuilds nothing, and
+`model.with_endog(y)` builds a core for a new response from `X'y`, `Z_i'y`
+and the class assignment alone (`LmmCore.with_response`, bit-identical to a
+fresh build). A refit for a new response is 2-3x faster on a continuous slope
+and 6-30x on an aggregated design.
+
+**Results.** The analytic scalar Hessian (`LmmCore.deviance_hessian`) replaces
+two differenced gradients for `q = 1`; first access to `bse` falls from
+37.5 ms to 0.3 ms at 125,066 groups. `q > 1` still differences the analytic
+gradient -- `2 * n_theta` calls, now each about half the cost.
+`random_effects_cov` is computed in the core from the cross-products it
+already holds, once, and `random_effects_cov_array` returns it without
+building a DataFrame per group: 2.8 s to 3-11 ms at 20,000 groups.
 
 ## What is compiled, and what is not
 
@@ -212,7 +322,8 @@ callers who want no scipy in the loop.
 
 ```
 src/linalg.rs   dense Cholesky, triangular solves, small matmuls (no BLAS dependency)
-src/lmm.rs      cross-products, profiled criterion, analytic gradient
+src/lmm.rs      cross-products, the block, aggregated and streaming kernels,
+                analytic gradient and scalar Hessian
 src/optim.rs    projected L-BFGS (the method="rust" path)
 src/lib.rs      PyO3 bindings
 
@@ -226,13 +337,11 @@ python/mixedlm_rs/_install.py            aliasing for code you cannot edit
 - **Crossed and nested random effects** break block-diagonality and need a real
   sparse Cholesky with a fill-reducing ordering. That is the largest piece of
   unfinished work and the reason this release is scoped to one grouping factor.
-- **Specialising the `q = 1` and `q = 2` cases** with fixed-size arithmetic
-  instead of the generic loops. Measured headroom is real but bounded: per group
-  the evaluation moves ~300 bytes for ~150 flops, so it is close to memory-bound
-  and the remaining gain is perhaps 2x, not 10x.
-- **Parallelising cross-product construction**, currently 16 ms of a 180 ms fit
-  at 125,066 groups.
+- **The Python-side preparation** is now most of a fit on an aggregated
+  design: the rank-revealing least-squares solve (12 ms at 500,264 rows) and
+  the group coding. The solve is not replaced by the normal equations, which
+  would square the condition number the rank check exists to measure.
 - **The in-Rust optimiser** is worse than scipy's and stays a fallback.
-- **The Hessian for variance-component standard errors** is computed by
-  differencing the analytic gradient. An analytic second derivative is derivable
-  and would be both faster and more accurate.
+- **An analytic Hessian for `q > 1`**, and a second-order optimiser built on
+  it. The scalar case is done; the matrix case adds per-group work to every
+  evaluation and is unmeasured.

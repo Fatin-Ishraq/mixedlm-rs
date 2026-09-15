@@ -14,6 +14,7 @@ wrong rather than merely different; every such case is documented in
 from __future__ import annotations
 
 import ast
+import copy
 import os
 import re
 import warnings
@@ -24,7 +25,7 @@ import numpy as np
 import pandas as pd
 from numpy.typing import ArrayLike
 
-from ._fit import ConvergenceWarning, fit_core
+from ._fit import ConvergenceWarning, PreparedDesign, _checksum, fit_core
 
 __all__ = [
     "ConvergenceWarning",
@@ -715,6 +716,22 @@ def _codes_from_groups(groups):
             "Note the signature is MixedLM(endog, exog, groups, exog_re=...) "
             "-- the third positional argument is the grouping variable."
         )
+    if g.dtype.kind in "iu" and g.size:
+        # Integer labels -- the usual case for array input -- are coded by
+        # counting rather than sorting: the same sorted labels and codes as
+        # np.unique, in linear time. Only when the label range is not much
+        # wider than the data, so the count table stays small.
+        lo, hi = int(g.min()), int(g.max())
+        span = hi - lo + 1
+        if span <= 2 * g.size + 1024 and hi <= np.iinfo(np.int64).max:
+            shifted = g.astype(np.int64) - lo
+            present = np.bincount(shifted, minlength=span) > 0
+            if lo == 0 and present.all():
+                return (np.arange(span, dtype=g.dtype),
+                        np.ascontiguousarray(shifted, dtype=np.int64))
+            labels = (np.flatnonzero(present) + lo).astype(g.dtype)
+            remap = np.cumsum(present, dtype=np.int64) - 1
+            return labels, np.ascontiguousarray(remap[shifted])
     uniq, codes = np.unique(g, return_inverse=True)
     return uniq, np.ascontiguousarray(codes.ravel(), dtype=np.int64)
 
@@ -829,6 +846,7 @@ class MixedLM:
         # The criterion the model was last fitted with; loglike/score/hessian
         # default to it rather than assuming REML.
         self.reml = True
+        self._prepared: tuple[int, PreparedDesign] | None = None
 
         self.group_labels, self._codes = _codes_from_groups(groups)
         self.n_groups: int = len(self.group_labels)
@@ -1013,8 +1031,54 @@ class MixedLM:
 
         res = fit_core(self.endog, self.exog, self.exog_re, self._codes,
                        self.n_groups, reml=reml, start_params=theta0,
-                       method=method, **opts)
+                       method=method, prepared=self._prepared_design(),
+                       **opts)
         return MixedLMResults(self, res)
+
+    def _prepared_design(self) -> PreparedDesign:
+        """The response-independent fitting work, reused across fits.
+
+        Refitting the same model -- REML then ML for a likelihood-ratio test,
+        or with a new start -- and fitting the models :meth:with_endog
+        returns, all skip the column scaling, the rank-revealing factorisation
+        and every design cross-product. The cache is keyed on a checksum of the
+        design arrays, so editing them in place between fits rebuilds it.
+        """
+        key = _checksum(self.exog, self.exog_re, self._codes)
+        cached = getattr(self, "_prepared", None)
+        if cached is None or cached[0] != key:
+            cached = (key, PreparedDesign(self.exog, self.exog_re, self._codes,
+                                          self.n_groups, snapshot=False))
+            self._prepared = cached
+        return cached[1]
+
+    def with_endog(self, endog: ArrayLike) -> MixedLM:
+        """The same model with a different response.
+
+        The design, the groups, the names and any formula metadata are shared
+        with this model, and so is the prepared design: fitting the result
+        costs the response-dependent products and the optimisation, not the
+        set-up. Intended for repeated related fits -- simulation, parametric
+        bootstrap, permutation tests. `endog` must be aligned with this
+        model's rows, after any `missing="drop"` filtering, and be finite.
+
+        A warm start is available through `fit(start_params=...)`; the
+        default start and the boundary checks still run. Not a statsmodels
+        method.
+        """
+        endog = np.asarray(endog, float).ravel()
+        if endog.shape != (self.nobs,):
+            raise ValueError(
+                f"endog has {endog.size} values; this model has {self.nobs} "
+                "rows")
+        if not np.all(np.isfinite(endog)):
+            raise ValueError("endog contains missing or non-finite values")
+        self._prepared_design()          # build or validate the shared cache
+        new = copy.copy(self)
+        new.endog = endog
+        new._core_cache = None
+        new._prepared = self._prepared
+        return new
 
     def _start_theta(self, start_params, use_sqrt=True):
         """Translate a user starting value into the internal `theta`.
@@ -1249,6 +1313,7 @@ class MixedLM:
         """
         state = self.__dict__.copy()
         state["_core_cache"] = None
+        state["_prepared"] = None
         state["_design_info"] = None
         state["_re_design_info"] = None
         # The captured formula namespace was pickle-tested when it was
@@ -1598,6 +1663,8 @@ class MixedLMResults:
         self._deviance: float = res["deviance"]
         self._bse_re_unscaled: np.ndarray | None = res["bse_re_unscaled"]
         self._compute_bse_re: Any = res.get("compute_bse_re")
+        self._compute_re_cov: Any = res.get("compute_re_cov")
+        self._re_cov_cache: np.ndarray | None = None
 
     # -- persistence --------------------------------------------------------
     #
@@ -1611,15 +1678,22 @@ class MixedLMResults:
         _ = self._bse_re_packed          # realise before discarding the core
         state = self.__dict__.copy()
         state["_compute_bse_re"] = None
+        # The conditional covariances are not forced: they are m x q x q and
+        # recomputable from the fitted numbers without the core.
+        state["_compute_re_cov"] = None
         res = dict(state["_res"])
         res.pop("core", None)
         res.pop("compute_bse_re", None)
+        res.pop("compute_re_cov", None)
         res["bse_re_unscaled"] = self._bse_re_unscaled
         state["_res"] = res
         return state
 
     def __setstate__(self, state):
         self.__dict__.update(state)
+        # Pickles written before these existed.
+        self.__dict__.setdefault("_compute_re_cov", None)
+        self.__dict__.setdefault("_re_cov_cache", None)
 
     def save(self, path: str | os.PathLike[str],
              with_data: bool = True) -> None:
@@ -1773,10 +1847,67 @@ class MixedLMResults:
 
     @property
     def random_effects(self) -> dict[Any, pd.Series]:
-        """Conditional modes, one entry per group, as statsmodels returns them."""
-        names = self.model._exog_re_names
-        return {lab: pd.Series(self._random_effects[i], index=names)
+        """Conditional modes, one entry per group, as statsmodels returns them.
+
+        This builds one pandas object per group on every access, which for
+        tens of thousands of groups costs far more than the fit. Use
+        :attr:`random_effects_frame` or :attr:`random_effects_array` for bulk
+        access.
+        """
+        index = pd.Index(self.model._exog_re_names)
+        # One fresh copy per access, and each Series is a view of its own row
+        # of it: nothing a caller does to one entry reaches another entry, a
+        # later access, or the fitted values.
+        values = np.array(self._random_effects, dtype=float, copy=True)
+        return {lab: pd.Series(values[i], index=index, copy=False)
                 for i, lab in enumerate(self.model.group_labels)}
+
+    @property
+    def random_effects_array(self) -> np.ndarray:
+        """Conditional modes as one ``(n_groups, k_re)`` array, a fresh copy.
+
+        Rows follow ``model.group_labels``. Not a statsmodels attribute.
+        """
+        return np.array(self._random_effects, dtype=float, copy=True)
+
+    @property
+    def random_effects_frame(self) -> pd.DataFrame:
+        """Conditional modes as one DataFrame indexed by group label.
+
+        The bulk counterpart of :attr:`random_effects`, built as a single
+        object. Not a statsmodels attribute.
+        """
+        return pd.DataFrame(self.random_effects_array,
+                            index=pd.Index(self.model.group_labels),
+                            columns=pd.Index(self.model._exog_re_names))
+
+    @property
+    def random_effects_cov_array(self) -> np.ndarray:
+        """``Var(b_i | y_i)`` for every group, ``(n_groups, k_re, k_re)``.
+
+        Rows follow ``model.group_labels``; a fresh copy on every access. See
+        :attr:`random_effects_cov` for what the quantity is. Not a statsmodels
+        attribute.
+        """
+        return np.array(self._re_cov(), dtype=float, copy=True)
+
+    def _re_cov(self) -> np.ndarray:
+        """The conditional covariances, computed once and kept read-only."""
+        if self._re_cov_cache is None:
+            covs = None
+            if self._compute_re_cov is not None:
+                try:
+                    covs = self._compute_re_cov()
+                except (RuntimeError, ValueError):     # pragma: no cover
+                    covs = None
+                # The closure holds the compiled core; one use is all it gets.
+                self._compute_re_cov = None
+            if covs is None:
+                covs = self._re_cov_from_data()
+            covs = np.asarray(covs, float)
+            covs.setflags(write=False)
+            self._re_cov_cache = covs
+        return self._re_cov_cache
 
     @property
     def random_effects_cov(self) -> dict[Any, pd.DataFrame]:
@@ -1795,11 +1926,25 @@ class MixedLMResults:
 
         the second form needing only ``q x q`` work per group. It is used
         because it stays valid when ``G`` is singular, which is exactly the
-        boundary case a mixed model most often lands on.
+        boundary case a mixed model most often lands on. A fitted model computes
+        the equivalent ``scale * Lambda (Lambda' Z_i'Z_i Lambda + I)^-1 Lambda'``
+        in the compiled core from the cross-products it already holds, once.
+
+        One DataFrame per group is built on every access; for many groups use
+        :attr:`random_effects_cov_array`.
         """
+        covs = np.array(self._re_cov(), dtype=float, copy=True)
+        index = pd.Index(self.model._exog_re_names)
+        # A fresh frame per group: these used to be the same mutable object,
+        # so editing one group's table edited every group's.
+        return {lab: pd.DataFrame(covs[i], index=index, columns=index,
+                                  copy=False)
+                for i, lab in enumerate(self.model.group_labels)}
+
+    def _re_cov_from_data(self) -> np.ndarray:
+        """The same covariances from the model's arrays, without the core."""
         G = np.asarray(self.cov_re, float)
         q = G.shape[0]
-        names = list(self.model._exog_re_names)
         m = self.model.n_groups
         codes = self.model._codes
         Z = self.model.exog_re
@@ -1820,10 +1965,7 @@ class MixedLMResults:
         except np.linalg.LinAlgError:                 # pragma: no cover
             covs = np.stack([G - G @ np.linalg.pinv(lhs[i]) @ gz[i]
                              for i in range(m)])
-        # A fresh frame per group: these used to be the same mutable object,
-        # so editing one group's table edited every group's.
-        return {lab: pd.DataFrame(covs[i], index=names, columns=names)
-                for i, lab in enumerate(self.model.group_labels)}
+        return covs
 
     def conf_int(self, alpha: float = 0.05,
                  cols: ArrayLike | None = None) -> np.ndarray:

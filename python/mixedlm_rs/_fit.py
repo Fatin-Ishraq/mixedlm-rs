@@ -18,6 +18,7 @@ scipy in the loop.
 from __future__ import annotations
 
 import warnings
+import zlib
 from typing import Any
 
 import numpy as np
@@ -26,7 +27,8 @@ from scipy.optimize import minimize
 
 from ._mixedlm_rs import LmmCore
 
-__all__ = ["ConvergenceWarning", "ExperimentalWarning", "fit_core"]
+__all__ = ["ConvergenceWarning", "ExperimentalWarning", "PreparedDesign",
+           "fit_core"]
 
 
 class ExperimentalWarning(UserWarning):
@@ -92,14 +94,25 @@ def _starts(core, start_params, n_starts):
 
 
 def _profiled_hessian(core, theta, reml, h=1e-5):
-    """Hessian of the profiled criterion, by central-differencing the analytic
-    gradient. Cheap: theta has 1, 3 or 6 entries.
+    """Hessian of the profiled criterion in theta.
 
-    Used only for standard errors of the variance components. Differencing an
-    analytic gradient is far more accurate than differencing the objective.
+    For a scalar random effect it is analytic (``LmmCore.deviance_hessian``):
+    one evaluation instead of two, and no differencing error. Otherwise it is
+    formed by central-differencing the analytic gradient, which costs
+    ``2 * n_theta`` gradient evaluations -- 6 for q = 2, 12 for q = 3 -- and is
+    far more accurate than differencing the objective.
+
+    Used for standard errors of the variance components and for
+    ``MixedLM.hessian``.
     """
     theta = np.asarray(theta, float)
     k = theta.size
+    if k == 1:
+        analytic = getattr(core, "deviance_hessian", None)
+        if analytic is not None:
+            val = analytic(list(theta), reml)
+            if val is not None:
+                return np.array([[float(val)]])
     H = np.zeros((k, k))
     for j in range(k):
         tp, tm = theta.copy(), theta.copy()
@@ -109,6 +122,62 @@ def _profiled_hessian(core, theta, reml, h=1e-5):
         _, gm = core.deviance_grad(list(tm), reml)
         H[:, j] = (np.asarray(gp) - np.asarray(gm)) / (2 * h)
     return 0.5 * (H + H.T)
+
+
+def _scalar_boundary_search(core, reml, run, best, state):
+    """Escape a zero variance for a scalar random effect, in ``t = theta^2``.
+
+    In ``theta`` the gradient vanishes identically at zero, so the bound looks
+    stationary whatever the data. In ``t`` it does not: the one-sided
+    derivative at ``t = 0`` is ``f'(0) = D''(0) / 2``, where ``D`` is the
+    criterion in ``theta``, and it is negative exactly when moving off the
+    bound improves the fit to first order.
+
+    The criterion is scanned on a logarithmic grid over eight decades of
+    ``theta``, four points a decade -- criterion-only evaluations, so on an
+    aggregated core (every random intercept) each is about a microsecond --
+    extended upward for as long as the last point is still the best. They are
+    counted in ``state["ncrit"]``, apart from the optimiser's evaluations. Every interior grid minimum that beats the bound is re-optimised
+    with the full optimiser, best first. This replaces six re-optimisations
+    at fixed trial points with, usually, zero or one.
+
+    Returns ``(best, settled)``. ``settled`` is False when the scan could not
+    vouch for the result -- ``f'(0) < 0`` with nothing better found, or no
+    finite criterion anywhere on the grid -- and the caller then falls back to
+    the trial-point ladder. A grid is a heuristic like the ladder was; neither
+    proves a global optimum.
+    """
+    grid = np.concatenate([[0.0], np.geomspace(1e-4, 1e4, 33)])
+    vals = [float(core.deviance([float(g)], reml)) for g in grid]
+    while int(np.argmin(vals)) == len(vals) - 1 and grid[-1] < 1e8:
+        more = grid[-1] * np.geomspace(1.78, 100.0, 8)
+        grid = np.concatenate([grid, more])
+        vals.extend(float(core.deviance([float(g)], reml)) for g in more)
+    state["ncrit"] += len(vals)
+    vals_a = np.asarray(vals)
+    if not np.any(np.isfinite(vals_a)):
+        return best, False
+
+    minima = [i for i in range(1, len(vals_a))
+              if np.isfinite(vals_a[i])
+              and vals_a[i] <= vals_a[i - 1]
+              and (i == len(vals_a) - 1 or vals_a[i] <= vals_a[i + 1])
+              and vals_a[i] < best.fun - 1e-10]
+    minima.sort(key=lambda i: vals_a[i])
+    improved = False
+    for i in minima[:3]:
+        res = run(np.array([grid[i]]))
+        if res.fun < best.fun - 1e-10:
+            best = res
+            improved = True
+
+    if improved:
+        return best, True
+    slope = core.deviance_hessian([0.0], reml)
+    if slope is None or not np.isfinite(slope):
+        return best, False
+    state["ncrit"] += 1
+    return best, bool(slope >= 0.0)
 
 
 def _cov_re_jacobian(theta, q):
@@ -127,7 +196,113 @@ def _cov_re_jacobian(theta, q):
     return J, vech
 
 
-def _condition_design(y, X):
+def _checksum(*arrays):
+    """A cheap content fingerprint: shapes, dtypes and a CRC of the bytes.
+
+    Used to decide whether cached design work still describes the arrays a
+    model holds, since NumPy arrays can be edited in place between fits. It is
+    a staleness check against accidental edits, not a security boundary.
+    """
+    crc = 0
+    for a in arrays:
+        a = np.ascontiguousarray(a)
+        crc = zlib.crc32(repr((a.shape, a.dtype.str)).encode(), crc)
+        crc = zlib.crc32(memoryview(a).cast("B"), crc)
+    return crc
+
+
+class PreparedDesign:
+    """The response-independent part of a fit, reusable across responses.
+
+    Holds the random-effects column scales, the scaled fixed-effect design and
+    its rank check, the group coding, and a template compiled core. A new
+    response then costs only ``X'y``, ``Z_i'y`` and a projection, instead of
+    ``X'X``, every ``Z_i'Z_i`` and ``Z_i'X``, a rank-revealing factorisation
+    and the kernel set-up.
+
+    With ``snapshot`` (the default) the arrays are copied at construction, so
+    editing the caller's arrays afterwards does not change a prepared design.
+    ``evaluator`` is passed to :class:`LmmCore`.
+    """
+
+    def __init__(self, X: ArrayLike, Z: ArrayLike, codes: ArrayLike,
+                 n_groups: int, snapshot: bool = True,
+                 evaluator: str = "auto") -> None:
+        Z = np.ascontiguousarray(Z, dtype=np.float64)
+        X = np.ascontiguousarray(X, dtype=np.float64)
+        if X.ndim != 2 or Z.ndim != 2:
+            raise ValueError("X and Z must be two-dimensional")
+        self.n_obs, self.q_re = Z.shape
+        self.n_groups = int(n_groups)
+        self.dscale = _column_scales(Z)
+        # When the columns are already on comparable scales -- which includes
+        # the very common intercept-only and standardised-predictor cases --
+        # the rescaling is a no-op and copying an n x q array to perform it is
+        # not free at 500,000 rows. Only divide when it changes something.
+        if np.all(self.dscale == 1.0):
+            self.Zs = Z.copy() if snapshot else Z
+        else:
+            self.Zs = np.ascontiguousarray(Z / self.dscale)
+        xscale = _rms_columns(X)
+        xscale[~np.isfinite(xscale) | (xscale <= 0)] = 1.0
+        self.xscale = xscale
+        if np.all(xscale == 1.0):
+            self.Xs = X.copy() if snapshot else X
+        else:
+            self.Xs = np.ascontiguousarray(X / xscale)
+        codes = np.ascontiguousarray(codes, dtype=np.int64)
+        self.codes = codes.copy() if snapshot else codes
+        self._snapshot = bool(snapshot)
+        self.evaluator = str(evaluator)
+        self._svd: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+        self._template: LmmCore | None = None
+        self._last: tuple[int, np.ndarray, np.ndarray, LmmCore] | None = None
+
+    def condition(self, y: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
+        """``(y_work, beta_offset)`` for a response; see ``_condition_design``."""
+        y = np.ascontiguousarray(y, dtype=np.float64)
+        if y.shape != (self.n_obs,):
+            raise ValueError(
+                f"the response has shape {y.shape}; the prepared design has "
+                f"{self.n_obs} rows")
+        if self._svd is None and self._template is None:
+            # The first response goes through the rank-revealing least-squares
+            # solve itself, so a one-off fit is exactly the fit it always was.
+            y_work, _, beta0, _ = _condition_design(y, self.Xs,
+                                                    prescaled=True)
+            return y_work, beta0
+        if self._svd is None:
+            u, s, vt = np.linalg.svd(self.Xs, full_matrices=False)
+            self._svd = (u, s, vt)
+        u, s, vt = self._svd
+        beta0 = vt.T @ ((u.T @ y) / s)
+        return np.ascontiguousarray(y - self.Xs @ beta0), beta0
+
+    def core_for(self, y: ArrayLike) -> tuple[LmmCore, np.ndarray]:
+        """The compiled core for response ``y``, and its OLS offset.
+
+        The same response twice -- an ML and a REML fit of one model, say --
+        returns the same core without rebuilding anything.
+        """
+        y = np.ascontiguousarray(y, dtype=np.float64)
+        key = _checksum(y) if self._snapshot else 0
+        last = self._last
+        if last is not None and last[0] == key and np.array_equal(last[1], y):
+            return last[3], last[2]
+        y_work, beta0 = self.condition(y)
+        if self._template is None:
+            core = LmmCore(y_work, self.Xs, self.Zs, self.codes, self.n_groups,
+                           self.evaluator)
+            self._template = core
+        else:
+            core = self._template.with_response(y_work, self.Xs, self.Zs,
+                                                self.codes)
+        if self._snapshot:
+            self._last = (key, y.copy(), beta0, core)
+        return core, beta0
+
+
+def _condition_design(y, X, prescaled=False):
     """Put the fixed-effect system on a well-conditioned, well-centred footing.
 
     Two exact reparameterisations, applied before any cross-product is formed:
@@ -163,12 +338,18 @@ def _condition_design(y, X):
     Returns `(y_work, X_work, beta_offset, xscale)` with
 
         beta_original = (beta_offset + beta_fitted) / xscale.
+
+    With `prescaled`, `X` is already the column-scaled design and is used as
+    it is (`xscale` comes back as ones).
     """
     X = np.ascontiguousarray(X, dtype=np.float64)
     y = np.ascontiguousarray(y, dtype=np.float64)
 
-    xscale = np.sqrt(np.mean(np.square(X), axis=0))
-    xscale[~np.isfinite(xscale) | (xscale <= 0)] = 1.0
+    if prescaled:
+        xscale = np.ones(X.shape[1])
+    else:
+        xscale = _rms_columns(X)
+        xscale[~np.isfinite(xscale) | (xscale <= 0)] = 1.0
     Xs = X if np.all(xscale == 1.0) else np.ascontiguousarray(X / xscale)
 
     # lstsq is rank-revealing, so the rank check below is free. `rcond` is set
@@ -217,9 +398,16 @@ def _column_scales(Z):
     differ by four orders of magnitude, and a single starting value cannot serve
     both.
     """
-    d = np.sqrt(np.mean(np.square(Z), axis=0))
+    d = _rms_columns(Z)
     d[~np.isfinite(d) | (d <= 0)] = 1.0
     return d
+
+
+def _rms_columns(A):
+    """Root-mean-square of each column, without an n x k temporary."""
+    A = np.asarray(A, dtype=np.float64)
+    with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
+        return np.sqrt(np.einsum("ij,ij->j", A, A) / A.shape[0])
 
 
 def fit_core(
@@ -236,6 +424,7 @@ def fit_core(
     gtol: float = 1e-8,
     ftol: float = 1e-12,
     want_se_re: bool = False,
+    prepared: PreparedDesign | None = None,
 ) -> dict[str, Any]:
     """Fit one grouping factor and return every derived quantity.
 
@@ -255,8 +444,12 @@ def fit_core(
     3. **Response offset by its OLS fit**, which is what makes the criterion
        computable at all when the response is far from zero. See
        `_condition_design`.
+
+    `prepared` supplies all of the response-independent work from an earlier
+    fit of the same design; `X`, `Z`, `codes` and `n_groups` are then ignored.
     """
-    Z = np.ascontiguousarray(Z, dtype=np.float64)
+    if prepared is None:
+        prepared = PreparedDesign(X, Z, codes, n_groups, snapshot=False)
 
     # ---- Identifiability of the variance split.
     #
@@ -272,25 +465,13 @@ def fit_core(
     #
     # So the structural count is used only to decide *where to look*, and the
     # claim itself is settled empirically below, by asking the criterion.
-    n_obs, q_re = Z.shape
-    n_groups = int(n_groups)
+    n_obs, q_re = prepared.n_obs, prepared.q_re
+    n_groups = prepared.n_groups
     suspect = (n_obs <= q_re * n_groups) or (n_groups == 1)
 
-    dscale = _column_scales(Z)
-    # When the columns are already on comparable scales -- which includes the
-    # very common intercept-only and standardised-predictor cases -- the
-    # rescaling is a no-op and copying an n x q array to perform it is not free
-    # at 500,000 rows. Only divide when it actually changes something.
-    if np.all(dscale == 1.0):
-        Zs = Z
-    else:
-        Zs = np.ascontiguousarray(Z / dscale)
-
-    y_work, Xs, beta_offset, xscale = _condition_design(y, X)
-
-    core = LmmCore(y_work, Xs, Zs,
-                   np.ascontiguousarray(codes, dtype=np.int64),
-                   int(n_groups))
+    dscale = prepared.dscale
+    xscale = prepared.xscale
+    core, beta_offset = prepared.core_for(y)
 
     q = core.q
     use_rust = str(method).lower() == "rust"
@@ -332,7 +513,7 @@ def fit_core(
     bounds = [(0.0, None) if np.isfinite(v) else (None, None) for v in lower]
     tix = _theta_index(q)
     diag_k = [k for k, (r, c) in enumerate(tix) if r == c]
-    state = {"nfev": 0, "nit": 0}
+    state = {"nfev": 0, "nit": 0, "ncrit": 0}
 
     class _Res:
         """The bit of a scipy OptimizeResult the driver below actually uses."""
@@ -438,21 +619,33 @@ def fit_core(
     # This costs nothing on well-behaved data: the escape only runs when a
     # variance component actually lands on the bound, and on clean fixtures a
     # whole fit is still 10-11 objective evaluations.
-    for _ in range(3):
-        at_bound = [k for k in diag_k if best.x[k] <= lower[k] + 1e-10]
-        if not at_bound:
-            break
-        improved = False
-        for k in at_bound:
-            for trial in (1e-3, 1e-2, 0.05, 0.2, 0.6, 1.5):
-                cand = np.array(best.x, float)
-                cand[k] = trial
-                res = run(cand)
-                if res.fun < best.fun - 1e-10:
-                    best = res
-                    improved = True
-        if not improved:
-            break
+    #
+    # A scalar random effect gets a cheaper and more thorough search first; see
+    # `_scalar_boundary_search`. The ladder remains its fallback.
+    def ladder(best):
+        for _ in range(3):
+            at_bound = [k for k in diag_k if best.x[k] <= lower[k] + 1e-10]
+            if not at_bound:
+                break
+            improved = False
+            for k in at_bound:
+                for trial in (1e-3, 1e-2, 0.05, 0.2, 0.6, 1.5):
+                    cand = np.array(best.x, float)
+                    cand[k] = trial
+                    res = run(cand)
+                    if res.fun < best.fun - 1e-10:
+                        best = res
+                        improved = True
+            if not improved:
+                break
+        return best
+
+    if q == 1 and best.x[0] <= lower[0] + 1e-10:
+        best, settled = _scalar_boundary_search(core, reml, run, best, state)
+        if not settled:
+            best = ladder(best)
+    else:
+        best = ladder(best)
 
     # ---- Certify, and retry while the certificate fails.
     #
@@ -462,10 +655,15 @@ def fit_core(
     # for method="rust", whose line search is weaker than scipy's: it used to
     # stop early at a point tens of deviance units worse and, before the flag
     # was fixed, report success there.
-    gtol_abs = 1e-5 * max(1.0, float(n_obs) - (float(X.shape[1]) if reml else 0.0))
+    gtol_abs = 1e-5 * max(1.0, float(n_obs) - (float(core.p) if reml else 0.0))
 
-    def certify(th):
+    def certify(th, full=True):
         """Evaluate at `th` and say whether it is a stationary point.
+
+        With `full`, the first element is the complete solution at `th`;
+        without, it is only a truthy marker and the check costs a gradient
+        evaluation rather than a full one -- the random effects and
+        `cov(beta)` are then formed once, for the candidate that is kept.
 
         Returns `(None, inf, False)` for an infeasible `th`. The optimiser can
         legitimately finish on one -- the objective reports 1e300 there rather
@@ -476,11 +674,17 @@ def fit_core(
         theta.
         """
         th = np.asarray(th, float)
-        try:
-            sol = core.solution(list(th), reml)
-        except RuntimeError:
-            return None, float("inf"), False
-        grad = np.asarray(sol["grad"], float)
+        if full:
+            try:
+                sol = core.solution(list(th), reml)
+            except RuntimeError:
+                return None, float("inf"), False
+            grad = np.asarray(sol["grad"], float)
+        else:
+            f, g = core.deviance_grad(list(th), reml)
+            if not np.isfinite(f):
+                return None, float("inf"), False
+            sol, grad = True, np.asarray(g, float)
         if not np.all(np.isfinite(grad)):
             return None, float("inf"), False
         pg = grad.copy()
@@ -536,7 +740,7 @@ def fit_core(
             for k in off_diag:
                 cand[k] += rng.normal(scale=spread)
             res = run(cand)
-            s_new, gn_new, ok_new = certify(res.x)
+            s_new, gn_new, ok_new = certify(res.x, full=False)
             if s_new is None:            # infeasible: not a candidate at all
                 continue
 
@@ -549,9 +753,11 @@ def fit_core(
                     or (ok_new and not stationary
                         and res.fun <= best.fun + 1e-10))
             if take:
-                best, sol, grad_norm, stationary = res, s_new, gn_new, ok_new
+                best, sol, grad_norm, stationary = res, None, gn_new, ok_new
             if stationary:
                 break
+        if sol is None:
+            sol = core.solution(list(np.asarray(best.x, float)), reml)
 
     if suspect:
         # Is the criterion actually flat along theta here? A ridge on which the
@@ -659,6 +865,10 @@ def fit_core(
             "max_abs_projected_gradient": float(grad_norm),
             "gradient_tolerance": float(gtol_abs),
             "n_objective_evaluations": int(nfev),
+            # Criterion-only evaluations outside the optimiser: the scalar
+            # boundary scan. Far cheaper than a gradient evaluation, and
+            # counted apart so the figure above stays comparable.
+            "n_criterion_evaluations": int(state["ncrit"]),
             "n_iterations": int(nit),
             "n_starts": int(n_starts),
             "optimiser_message": str(message),
@@ -749,5 +959,17 @@ def fit_core(
 
     out["compute_bse_re"] = _compute_bse_re
     out["bse_re_unscaled"] = _compute_bse_re() if want_se_re else None
+
+    def _compute_re_cov():
+        """``Var(b_i | y)`` for every group, shape ``(m, q, q)``, data scale.
+
+        Formed in the core from the group cross-products it already holds, as
+        ``sigma^2 Lambda A_i^-1 Lambda'``, then mapped back through the column
+        scaling exactly as ``cov_re`` is.
+        """
+        covs = np.asarray(core.conditional_covariances(list(theta), reml), float)
+        return covs * np.outer(Dinv, Dinv)[None, :, :]
+
+    out["compute_re_cov"] = _compute_re_cov
 
     return out

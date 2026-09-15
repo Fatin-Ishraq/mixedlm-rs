@@ -35,12 +35,18 @@ class LmmCore:
         Group index per row, shape ``(n,)``, int64, values in ``0..n_groups-1``.
     n_groups
         Number of groups, positive.
+    evaluator
+        The kernel that evaluates the criterion. ``"auto"`` aggregates groups
+        with bit-identical ``Z_i'Z_i`` when that is cheaper and otherwise uses
+        per-group blocks; ``"blocks"``, ``"aggregated"`` and ``"streaming"``
+        force one. All compute the same criterion to rounding.
 
     Raises
     ------
     ValueError
         If the shapes disagree, a design has zero columns, ``y`` is empty,
-        ``n_groups`` is zero, or a group code is out of range.
+        ``n_groups`` is zero, a group code is out of range, or ``evaluator``
+        is not one of the names above.
     """
 
     def __new__(
@@ -50,7 +56,30 @@ class LmmCore:
         z: NDArray[np.float64],
         codes: NDArray[np.int64],
         n_groups: int,
+        evaluator: str = "auto",
     ) -> LmmCore: ...
+    def with_response(
+        self,
+        y: NDArray[np.float64],
+        x: NDArray[np.float64],
+        z: NDArray[np.float64],
+        codes: NDArray[np.int64],
+    ) -> LmmCore:
+        """The same design with a new response.
+
+        Reuses ``X'X``, every ``Z_i'Z_i`` and ``Z_i'X`` and the kernel set-up;
+        the result is identical to a fresh build. ``x``, ``z`` and ``codes``
+        must be the arrays the core was built from (the codes are checked).
+        """
+
+    @property
+    def evaluator(self) -> str:
+        """The kernel in use: ``"blocks"``, ``"aggregated"`` or ``"streaming"``."""
+
+    @property
+    def n_classes(self) -> int | None:
+        """Distinct ``Z_i'Z_i`` classes when aggregated, otherwise ``None``."""
+
     @property
     def n(self) -> int:
         """Number of observations."""
@@ -84,6 +113,21 @@ class LmmCore:
         """Profiled deviance and its analytic gradient at ``theta``.
 
         Returns ``(inf, [nan, ...])`` for an infeasible ``theta``.
+        """
+
+    def deviance_hessian(self, theta: Any, reml: bool = True) -> float | None:
+        """Analytic second derivative in ``theta`` for a scalar random effect.
+
+        ``None`` when ``q > 1``; ``nan`` for an infeasible ``theta``.
+        """
+
+    def conditional_covariances(
+        self, theta: Any, reml: bool = True
+    ) -> NDArray[np.float64]:
+        """``Var(b_i | y)`` for every group, shape ``(m, q, q)``.
+
+        On the core's own random-effects coordinates. Raises ``RuntimeError``
+        if ``theta`` is infeasible.
         """
 
     def lower_bounds(self) -> list[float]:

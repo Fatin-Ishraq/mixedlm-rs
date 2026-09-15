@@ -161,6 +161,8 @@ of the above is safe to rely on.
 | `results.bse_cov_re` | Standard errors on the same scale as `cov_re`, which `bse_re` is not. |
 | `results.param_names`, `params_labelled`, `fe_params_labelled` | Name-based access, replacing what the Series return types would have given. |
 | `results.save(path, with_data=False)` | Smaller file, at the cost of formula prediction after loading. |
+| `results.random_effects_array`, `random_effects_frame`, `random_effects_cov_array` | Bulk access to the conditional modes and conditional covariances, rows in `model.group_labels` order. The dict accessors build one pandas object per group on every access, which for tens of thousands of groups costs far more than the fit. |
+| `model.with_endog(new_endog)` | The same design, groups and metadata with a new response, reusing all of the response-independent set-up. For simulation, parametric bootstrap and permutation tests. |
 | `method="rust"` | **Experimental.** See LIMITATIONS.md. |
 
 ---

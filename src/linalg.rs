@@ -10,6 +10,7 @@
 /// `a` is `n x n` row-major and is overwritten with `L` in its lower triangle;
 /// the strict upper triangle is zeroed. Returns `None` if `a` is not positive
 /// definite, which the caller treats as "this theta is infeasible".
+#[inline(always)]
 pub fn cholesky(a: &mut [f64], n: usize) -> Option<()> {
     for j in 0..n {
         let mut d = a[j * n + j];
@@ -53,6 +54,7 @@ pub fn log_diag_sum(l: &[f64], n: usize) -> f64 {
 
 /// Solve `L * X = B` in place for lower-triangular `L` (`n x n`).
 /// `b` is `n x k` row-major and is overwritten with `X`.
+#[inline(always)]
 pub fn trsm_lower(l: &[f64], b: &mut [f64], n: usize, k: usize) {
     for i in 0..n {
         let inv = 1.0 / l[i * n + i];
@@ -67,6 +69,7 @@ pub fn trsm_lower(l: &[f64], b: &mut [f64], n: usize, k: usize) {
 }
 
 /// Solve `L' * X = B` in place for lower-triangular `L` (`n x n`).
+#[inline(always)]
 pub fn trsm_lower_t(l: &[f64], b: &mut [f64], n: usize, k: usize) {
     for i in (0..n).rev() {
         let inv = 1.0 / l[i * n + i];
@@ -81,6 +84,7 @@ pub fn trsm_lower_t(l: &[f64], b: &mut [f64], n: usize, k: usize) {
 }
 
 /// `c = a * b`, with `a` being `m x k` and `b` being `k x n`, all row-major.
+#[inline(always)]
 pub fn matmul(a: &[f64], b: &[f64], c: &mut [f64], m: usize, k: usize, n: usize) {
     for v in c.iter_mut().take(m * n) {
         *v = 0.0;
@@ -101,6 +105,7 @@ pub fn matmul(a: &[f64], b: &[f64], c: &mut [f64], m: usize, k: usize, n: usize)
 }
 
 /// `c = a' * b`, with `a` being `k x m` and `b` being `k x n`, all row-major.
+#[inline(always)]
 pub fn matmul_at(a: &[f64], b: &[f64], c: &mut [f64], k: usize, m: usize, n: usize) {
     for v in c.iter_mut().take(m * n) {
         *v = 0.0;
@@ -123,6 +128,7 @@ pub fn matmul_at(a: &[f64], b: &[f64], c: &mut [f64], k: usize, m: usize, n: usi
 
 /// Full inverse of a symmetric positive-definite matrix from its Cholesky factor.
 /// `l` is lower-triangular `n x n`; `out` receives the `n x n` inverse.
+#[inline(always)]
 pub fn chol_inverse(l: &[f64], out: &mut [f64], n: usize) {
     // Build the identity, then apply L^{-1} and L^{-T}.
     for v in out.iter_mut().take(n * n) {

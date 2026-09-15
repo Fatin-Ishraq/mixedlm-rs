@@ -337,8 +337,8 @@ fixable in-tree.
 pip install maturin pytest numpy scipy pandas patsy statsmodels
 python -m maturin build --release --out dist
 pip install --force-reinstall --no-deps --no-index --find-links dist mixedlm-rs
-pytest tests/ -q      # 696 tests, with statsmodels + mypy + data/
-cargo test --lib      # 7 tests
+pytest tests/ -q      # 745 tests, with statsmodels + mypy + data/
+cargo test --lib      # 10 tests
 ```
 
 The differential and fuzz tests skip cleanly when statsmodels is absent — they

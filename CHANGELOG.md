@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased
+
+Performance work from `.review/OPTIMIZATION-ROADMAP.md`. Every change is an
+exact rearrangement of the same criterion; fitted optima on the 120 differential
+and 400 stress fixtures are unchanged to within the criterion's rounding. See
+`docs/DESIGN.md` and `bench/phases.json`.
+
+- **Exact aggregation of groups with identical `Z_i'Z_i`.** A random intercept,
+  or a random slope over a repeated visit schedule, evaluates in time
+  proportional to the number of distinct group Gram matrices rather than the
+  number of groups: a gradient at 125,066 groups falls from 19-34 ms to about
+  2 microseconds, and a whole fit from 204-442 ms to 47-69 ms on one thread.
+  Chosen automatically when it pays.
+- **Separate criterion, gradient and full-solution evaluations.** `deviance`
+  makes one pass and stores nothing per group; only `solution` forms the random
+  effects and `cov(beta)`. Certification retries use gradient calls.
+- **Deterministic, adaptive parallelism.** Fixed chunks summed in order: the
+  criterion is identical on any thread count (previously it was not, and a
+  degenerate fit could return a different optimum on every run). Small models
+  run serially: an 18-group gradient is 8x faster.
+- **Specialised `q = 1, 2, 3` kernels, pooled per-evaluation buffers,
+  compensated accumulation.** Continuous-slope gradients are about 2x faster.
+- **Parallel, single-triangle cross-product construction.**
+- **Analytic scalar Hessian** (`LmmCore.deviance_hessian`) for `q = 1`
+  standard errors, and a variance-coordinate boundary search for scalar random
+  effects that cuts optimiser evaluations at a zero variance from 15 to 2.
+- **Faster bulk results.** `random_effects_cov` is computed in the core once;
+  new `random_effects_array`, `random_effects_frame` and
+  `random_effects_cov_array` avoid one pandas object per group (2.8 s to 11 ms
+  at 20,000 groups).
+- **Reuse across fits.** Refitting a model reuses its design work, and
+  `MixedLM.with_endog` fits a new response on the same design 2-30x faster.
+- New low-level options: `LmmCore(..., evaluator=...)`, `LmmCore.with_response`,
+  `LmmCore.conditional_covariances`, `evaluator` and `n_classes`. New
+  diagnostic `n_criterion_evaluations`.
+- `bench/phases.py`: phase-by-phase timing of a candidate build against a
+  baseline, with alternating rounds, pinned thread budgets and build identity.
+
 ## 0.1.1 — 2026-09-10
 
 Documentation release; the fitting algorithms and numerical API are unchanged.
