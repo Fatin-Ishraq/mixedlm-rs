@@ -1,7 +1,7 @@
 {
- "recorded_at": "2026-09-10T18:05:11",
+ "recorded_at": "2026-09-19T06:36:41",
  "environment": {
-  "commit": "40795e0ab33f9c0b54336fbfc9e78d798ea1f0f9",
+  "commit": "f582026c960f0ed91d988eabb928b02e5867cd12",
   "working_tree_dirty": false,
   "mixedlm_rs": "0.1.1",
   "python": "3.14.3",
@@ -17,11 +17,11 @@
    "statsmodels": "0.15.0"
   },
   "extension_name": "mixedlm_rs/_mixedlm_rs.pyd",
-  "extension_sha256": "c2a424179e09de3fdb5231b93b02a9a6472978f28998ce20edaffac4e76f5691",
-  "extension_bytes": 359424,
+  "extension_sha256": "f85c9aee6153fcb79335773a0da5b65e527904b9e9cb91fb1f49be4e9b7b11b8",
+  "extension_bytes": 686080,
   "package_location": "site-packages/mixedlm_rs",
-  "imported_from_checkout": true,
-  "python_sources_sha256": "5607ef0d333a0638c6eb240ec39f60d7525afc47fea65c627cde604c292f3cd4",
+  "imported_from_checkout": false,
+  "python_sources_sha256": "b24de5cb8f7dadb7ae6e4e1c496abc62c58e9579bc2eb2c0c9b24f300f11546f",
   "python_sources_files": [
    "__init__.py",
    "_fit.py",
@@ -33,7 +33,7 @@
   "cases": 120,
   "seed_base": 10000,
   "generator": "tests/test_fuzz.py::random_case",
-  "seconds": 60.379748199999085,
+  "seconds": 60.29284490000009,
   "counts": {
    "reference did not converge": 26,
    "we found a better optimum": 42,
@@ -51,25 +51,25 @@
   "cases": 400,
   "seed": 0,
   "generator": "bench/stress_sweep.py::make_case",
-  "seconds": 172.56036820000008,
+  "seconds": 176.16227479999998,
   "counts": {
-   "same optimum": 167,
+   "same optimum": 168,
    "reference did not converge": 99,
-   "we found a better optimum": 131,
+   "we found a better optimum": 130,
    "we found a worse optimum": 3
   },
   "losses": [
    {
     "case": 100,
     "shape": "collinear",
-    "deviance_worse_by": 5.6188595181083656e-05,
+    "deviance_worse_by": 6.331754298116721e-05,
     "n": 1035,
     "groups": 72
    },
    {
     "case": 214,
     "shape": "collinear",
-    "deviance_worse_by": 5.7103996311980154e-05,
+    "deviance_worse_by": 6.708231234142659e-05,
     "n": 186,
     "groups": 15
    },
@@ -81,14 +81,9 @@
     "groups": 132
    }
   ],
-  "uncertified": [
-   {
-    "case": 214,
-    "shape": "collinear"
-   }
-  ],
+  "uncertified": [],
   "warnings": {
-   "ConvergenceWarning": 980,
+   "ConvergenceWarning": 979,
    "SingularMatrixWarning": 58
   }
  },
@@ -96,15 +91,15 @@
  "suites": {
   "pytest": {
    "returncode": 0,
-   "summary": "691 passed, 5 skipped, 22 warnings in 100.84s (0:01:40)",
-   "collected": 696,
-   "passed": 691,
+   "summary": "740 passed, 5 skipped, 22 warnings in 113.36s (0:01:53)",
+   "collected": 745,
+   "passed": 740,
    "skipped": 5
   },
   "cargo": {
    "returncode": 0,
-   "summary": "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-   "collected": 7
+   "summary": "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s",
+   "collected": 10
   }
  }
 }
