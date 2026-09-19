@@ -37,6 +37,14 @@ and 400 stress fixtures are unchanged to within the criterion's rounding. See
   diagnostic `n_criterion_evaluations`.
 - `bench/phases.py`: phase-by-phase timing of a candidate build against a
   baseline, with alternating rounds, pinned thread budgets and build identity.
+- **lme4 measured on the release build.** `bench/three_way.py` fits the same
+  CSV files with mixedlm-rs, statsmodels and lme4 in one session:
+  4x to 64x faster than lme4 from 100 to 125,066 groups, and on 120 hard
+  fixtures it matches lme4's optimum on 113 and finds a higher likelihood on 7
+  (statsmodels lands lower on 43). Recorded in `bench/three_way.json`; the
+  statsmodels scaling in `bench/performance.json` was re-recorded too (50x to
+  2375x). Three new README charts: three-package scaling, agreement with
+  lme4, and the speedup over 0.1.1.
 
 ## 0.1.1 — 2026-09-10
 

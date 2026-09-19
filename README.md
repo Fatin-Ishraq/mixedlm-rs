@@ -254,18 +254,18 @@ printing a summary.
 
 | Observations | Groups | statsmodels | mixedlm-rs | Speedup |
 |---:|---:|---:|---:|---:|
-| 2,000 | 100 | 0.325 s | 0.0082 s | 40x |
-| 10,000 | 500 | 1.655 s | 0.0091 s | 183x |
-| 20,000 | 1,000 | 2.543 s | 0.0111 s | 229x |
-| 40,000 | 5,000 | 11.019 s | 0.0167 s | 661x |
-| 100,000 | 20,000 | 41.873 s | 0.0384 s | 1092x |
-| 200,000 | 50,000 | 102.791 s | 0.0732 s | 1404x |
-| 500,264 | 125,066 | Not measured | 0.218 s | — |
+| 2,000 | 100 | 0.353 s | 0.0070 s | 50x |
+| 10,000 | 500 | 1.813 s | 0.0085 s | 215x |
+| 20,000 | 1,000 | 2.666 s | 0.0107 s | 250x |
+| 40,000 | 5,000 | 11.472 s | 0.0141 s | 814x |
+| 100,000 | 20,000 | 43.358 s | 0.0244 s | 1777x |
+| 200,000 | 50,000 | 108.354 s | 0.0456 s | 2375x |
+| 500,264 | 125,066 | Not measured | 0.124 s | — |
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Fatin-Ishraq/mixedlm-rs/main/docs/assets/scaling-dark.svg">
   <img src="https://raw.githubusercontent.com/Fatin-Ishraq/mixedlm-rs/main/docs/assets/scaling-light.svg"
-       alt="Fit time against grouping factor levels, log-log. statsmodels rises from 0.3 to 103 seconds; mixedlm-rs stays between 0.008 and 0.073 seconds."
+       alt="Fit time against grouping factor levels, log-log. statsmodels rises from 0.35 to 108 seconds; mixedlm-rs stays between 0.007 and 0.046 seconds."
        width="100%">
 </picture>
 
@@ -282,7 +282,7 @@ and likelihoods passed the benchmark's agreement checks. The workload favors
 many small groups; speedups depend on model shape, data, dependencies and
 hardware, and should not be assumed for every analysis.
 
-The measurements were recorded on 2026-09-10 at commit `4124cf9`.
+The measurements were recorded on 2026-09-19 at commit `d01ab61` (0.2.0).
 [`bench/performance.json`](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/bench/performance.json)
 contains all repetitions, dependency versions, thread settings and the
 extension hash. Reproduce the comparison with
@@ -294,11 +294,69 @@ Its reported 41-minute timing is not a measurement made here. Our synthetic
 case is not a reproduction of their dataset and should not be read as a measured
 speedup over that report.
 
-Historical R/lme4 and pymer4 timings are presented separately in the
-[benchmark report](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/docs/BENCHMARKS.md).
-They were not rerun for this measurement. The pymer4 path also performs
-lmerTest inference and result extraction, so its elapsed time covers different
-work from a bare model fit.
+### Against lme4
+
+[`bench/three_way.py`](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/bench/three_way.py) fits byte-identical CSV
+files with all three packages in one session on the same machine, with lme4
+2.0.6 run through R 4.6.1 and timed inside R. Each Python fit is checked
+against lme4's before its time is reported.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Fatin-Ishraq/mixedlm-rs/main/docs/assets/three-way-scaling-dark.svg">
+  <img src="https://raw.githubusercontent.com/Fatin-Ishraq/mixedlm-rs/main/docs/assets/three-way-scaling-light.svg"
+       alt="Fit time against groups, log-log, for three packages. At 125,066 groups mixedlm-rs takes 110 ms and lme4 7.03 s; statsmodels takes 108 s at 50,000 groups."
+       width="100%">
+</picture>
+
+| Observations | Groups | lme4 | statsmodels | mixedlm-rs | vs lme4 |
+|---:|---:|---:|---:|---:|---:|
+| 2,000 | 100 | 0.030 s | 0.351 s | 0.0075 s | 4x |
+| 10,000 | 500 | 0.075 s | 1.739 s | 0.0083 s | 9x |
+| 20,000 | 1,000 | 0.163 s | 2.636 s | 0.0130 s | 13x |
+| 40,000 | 5,000 | 0.322 s | 11.041 s | 0.0160 s | 20x |
+| 100,000 | 20,000 | 1.135 s | 43.134 s | 0.0273 s | 42x |
+| 200,000 | 50,000 | 2.409 s | 107.936 s | 0.0468 s | 51x |
+| 500,264 | 125,066 | 7.033 s | Not measured | 0.110 s | 64x |
+
+Accuracy is measured on the same 120 randomised fixtures as above, this
+time against lme4's optimum:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Fatin-Ishraq/mixedlm-rs/main/docs/assets/lme4-agreement-dark.svg">
+  <img src="https://raw.githubusercontent.com/Fatin-Ishraq/mixedlm-rs/main/docs/assets/lme4-agreement-light.svg"
+       alt="Outcomes on 120 fixtures relative to lme4. mixedlm-rs: 113 match, 7 higher likelihood. statsmodels: 74 match, 3 higher, 26 lower and flagged not converged, 17 lower but reported converged."
+       width="100%">
+</picture>
+
+mixedlm-rs matched lme4's optimum on 113 fixtures and reached a higher
+likelihood on 7. It did not finish below lme4 on any fixture. statsmodels finished below lme4 on 43, and on 17 of
+those it still reported convergence. lme4 is a reference here, not ground
+truth: its optimiser can stop short too. Both experiments were recorded on
+2026-09-19 at commit `7677222` (0.2.0) in
+[`bench/three_way.json`](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/bench/three_way.json), under the same
+measurement conditions and caveats as above.
+
+The earlier lme4 and pymer4 timings, including pymer4's, are kept in the
+[benchmark report](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/docs/BENCHMARKS.md) as historical records. The pymer4
+path also performs lmerTest inference and result extraction, so its elapsed
+time covers different work from a bare model fit.
+
+### Against the previous release
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Fatin-Ishraq/mixedlm-rs/main/docs/assets/release-speedup-dark.svg">
+  <img src="https://raw.githubusercontent.com/Fatin-Ishraq/mixedlm-rs/main/docs/assets/release-speedup-light.svg"
+       alt="Full-fit speedup of 0.2.0 over 0.1.1 per case, at 1 and 12 threads: 1.4x to 2.2x on continuous random slopes, 4.0x to 6.4x on one thread where groups share a design."
+       width="100%">
+</picture>
+
+0.2.0 fits 1.4x to 6.4x faster than 0.1.1 on the same machine. The largest
+gains are on designs where many groups share the same random-effects design,
+such as a random intercept or a slope over a shared visit schedule. There the work
+scales with the number of distinct group designs, not the number of groups.
+Recorded with [`bench/phases.py`](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/bench/phases.py) in
+[`bench/phases.json`](https://github.com/Fatin-Ishraq/mixedlm-rs/blob/main/bench/phases.json), which alternates the two
+builds and keeps every sample.
 
 ## How it works
 
