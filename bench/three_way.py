@@ -227,7 +227,7 @@ def timing(rscript, cases, reps, workdir):
         df = pd.read_csv(path)
         require_quiet(f"{name} (python)", load)
         ours_t, ours = time_reps(
-            lambda: mlm.mixedlm("y ~ x1 + x2", df, groups=df["g"],
+            lambda df=df: mlm.mixedlm("y ~ x1 + x2", df, groups=df["g"],
                                 re_formula="~x1").fit(), reps)
         row = {"case": name, "n": len(df), "groups": ngroups,
                "mixedlm_rs": {"seconds": min(ours_t), "repetitions": ours_t,
@@ -237,7 +237,7 @@ def timing(rscript, cases, reps, workdir):
         if with_sm:
             sm_reps = 1 if len(df) > SM_SINGLE_REP_ABOVE else reps
             sm_t, sm = time_reps(
-                lambda: smf.mixedlm("y ~ x1 + x2", df, groups=df["g"],
+                lambda df=df: smf.mixedlm("y ~ x1 + x2", df, groups=df["g"],
                                     re_formula="~x1").fit(), sm_reps)
             row["statsmodels"] = {"seconds": min(sm_t), "repetitions": sm_t,
                                   "converged": bool(sm.converged)}
