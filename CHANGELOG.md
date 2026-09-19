@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-09-19
 
 Performance work from `.review/OPTIMIZATION-ROADMAP.md`. Every change is an
 exact rearrangement of the same criterion; fitted optima on the 120 differential

@@ -1,7 +1,7 @@
 """Draw the README's charts from the recorded evidence.
 
-Nothing here invents a number. Every value is read from `bench/baseline.json`
-or `bench/performance.json`, so a chart cannot drift from the run it claims to
+Nothing here invents a number. Every value is read from `bench/baseline.json`,
+`bench/performance.json`, `bench/three_way.json` or `bench/phases.json`, so a chart cannot drift from the run it claims to
 depict -- the same discipline the tables are held to, applied to the pictures.
 
     python bench/make_charts.py
@@ -363,6 +363,83 @@ def lme4_agreement_chart(three, theme, path):
     return True
 
 
+# The phase benchmark's cases, in the words a reader would use for them.
+RELEASE_CASES = (
+    ("slope-18", "random slope, 18 groups"),
+    ("slope-500", "random slope, 500 groups"),
+    ("slope-50k", "random slope, 50k groups"),
+    ("slope-125k", "random slope, 125k groups"),
+    ("slope-20k-p30", "random slope, 20k groups, 30 fixed effects"),
+    ("intercept-125k", "random intercept, 125k groups"),
+    ("unbalanced-125k", "unbalanced intercept, 125k groups"),
+    ("visits-125k", "slope in visit number, 125k groups"),
+)
+
+
+def release_speedup_chart(phases, theme, path):
+    """How much faster a full fit is than the previous release, per case."""
+    from matplotlib.lines import Line2D
+    from matplotlib.ticker import FuncFormatter
+
+    builds = phases["builds"]
+    threads = [t for t in phases["settings"]["threads"]
+               if t in builds["candidate"]["threads"]]
+    cases = [(key, label) for key, label in RELEASE_CASES
+             if key in builds["candidate"]["threads"][threads[0]]]
+    # Colour, marker and label side per thread count: 1 thread above the
+    # row, many below, so two close values never print over each other.
+    marks = {threads[0]: ("s1", "o", 7, "bottom"),
+             threads[-1]: ("s2", "s", -8, "top")}
+
+    fig, ax = plt.subplots(figsize=(7.2, 0.5 * len(cases) + 1.4))
+    handles = []
+    for t in threads:
+        slot, marker, dy, va = marks[t]
+        xs = [builds["baseline"]["threads"][t][k]["fit"]["median_ms"]
+              / builds["candidate"]["threads"][t][k]["fit"]["median_ms"]
+              for k, _ in cases]
+        ys = range(len(cases) - 1, -1, -1)
+        style_kw = {"color": theme[slot], "marker": marker, "markersize": 8,
+                    "markeredgecolor": theme["surface"],
+                    "markeredgewidth": 1.4, "linestyle": "none"}
+        ax.plot(xs, list(ys), zorder=3, **style_kw)
+        for x, y in zip(xs, ys, strict=True):
+            ax.annotate(f"{x:.1f}x", (x, y), textcoords="offset points",
+                        xytext=(0, dy), ha="center", va=va, fontsize=8.5,
+                        color=theme["secondary"])
+        name = "1 thread" if t == "1" else f"{t} threads"
+        handles.append(Line2D([], [], label=name, **style_kw))
+
+    ax.axvline(1, color=theme["secondary"], linewidth=1, zorder=2)
+    ax.set_xscale("log")
+    ax.set_xlim(0.8, 10)
+    ax.set_xticks([1, 2, 4, 8])
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _p: f"{v:g}x"))
+    ax.set_yticks(range(len(cases)))
+    ax.set_yticklabels([label for _, label in reversed(cases)],
+                       color=theme["primary"], fontsize=9.5)
+    ax.set_ylim(-0.6, len(cases) - 0.3)
+    ax.set_xlabel(f"full fit, times faster than {builds['baseline']['version']}"
+                  " (log scale)", color=theme["secondary"])
+    _chrome(ax, theme)
+    ax.grid(False, axis="y")
+
+    legend = ax.legend(handles=handles, loc="lower right",
+                       bbox_to_anchor=(1, 1), ncols=2, frameon=False,
+                       fontsize=9.5)
+    for text in legend.get_texts():
+        text.set_color(theme["primary"])
+
+    fig.tight_layout()
+    fig.savefig(path, transparent=True, bbox_inches="tight", dpi=200)
+    plt.close(fig)
+    return True
+
+
+def _optional(path):
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
 def main() -> int:
     ASSETS.mkdir(parents=True, exist_ok=True)
     baseline_path = ROOT / "bench" / "baseline.json"
@@ -377,6 +454,8 @@ def main() -> int:
 
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
     perf = json.loads(perf_path.read_text(encoding="utf-8"))
+    three = _optional(ROOT / "bench" / "three_way.json")
+    phases = _optional(ROOT / "bench" / "phases.json")
 
     written = []
     for name, theme in THEMES.items():
@@ -387,6 +466,19 @@ def main() -> int:
         target = ASSETS / f"outcomes-{name}.svg"
         if outcomes_chart(baseline, theme, target):
             written.append(target)
+        # The optional records: each chart is drawn only if its run exists.
+        if three and three.get("timing"):
+            target = ASSETS / f"three-way-scaling-{name}.svg"
+            if three_way_scaling_chart(three, theme, target):
+                written.append(target)
+        if three and three.get("accuracy"):
+            target = ASSETS / f"lme4-agreement-{name}.svg"
+            if lme4_agreement_chart(three, theme, target):
+                written.append(target)
+        if phases:
+            target = ASSETS / f"release-speedup-{name}.svg"
+            if release_speedup_chart(phases, theme, target):
+                written.append(target)
 
     for path in written:
         print(f"wrote {path.relative_to(ROOT)} "
