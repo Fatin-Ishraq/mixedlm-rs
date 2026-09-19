@@ -40,6 +40,7 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import statistics
 import subprocess
 import sys
@@ -176,6 +177,19 @@ def _busy():
     except Exception:                                  # pragma: no cover
         return None
     return cpu_busy_fraction()
+
+
+def dumps(result):
+    """Indented JSON with every list of numbers on one line.
+
+    Each phase keeps all of its samples; one sample per line made the file
+    thousands of lines long for no gain in readability.
+    """
+    def one_line(match):
+        return "[" + ", ".join(v.strip() for v in match.group(1).split(",")) + "]"
+
+    text = json.dumps(result, indent=1)
+    return re.sub(r"\[([-+\d.eE,\s]+)\]", one_line, text) + "\n"
 
 
 def _summary(samples):
