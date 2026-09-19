@@ -13,8 +13,9 @@ each is what it is, are in `bench/tolerances.py`.
 **Counts can move with the environment.** The optimiser on the default path is
 SciPy's, so a different SciPy build can change which fixtures land on which
 side of a tie. An independent re-run on Python 3.11 with SciPy 1.17.1 produced
-130 wins and 168 ties on the 400-case sweep where the recorded baseline has 131
-and 167 — the same picture, one case moved. That is why `bench/baseline.json`
+130 wins and 168 ties on the 400-case sweep where the baseline then recorded 131
+and 167 — the same picture, one case moved. (The current baseline, recorded
+after the kernel changes, also has 130 and 168.) That is why `bench/baseline.json`
 records the environment alongside the counts rather than treating it as a
 footnote, and why the reproduction instructions name it.
 

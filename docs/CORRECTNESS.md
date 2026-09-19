@@ -133,15 +133,16 @@ be checked. It is committed as `bench/stress_sweep.py`; reproduce with
 |---|---:|
 | we raised an exception | **0** |
 | statsmodels did not converge | 99 |
-| we found a strictly **better** optimum | **131** |
-| same optimum | 167 |
+| we found a strictly **better** optimum | **130** |
+| same optimum | 168 |
 | we found a **worse** optimum | 3 |
-| we failed to certify a stationary point | 1 |
+| we failed to certify a stationary point | 0 |
 
-The one case where stationarity could not be certified is reported as
-`converged=False` with the projected gradient in the message, which is the
-honest answer for a near-collinear design whose criterion is nearly flat in one
-direction. It is not silently reported as a success.
+Case 214, a near-collinear design, used to be the one case where stationarity
+could not be certified; it was reported as `converged=False` with the projected
+gradient in the message rather than as a success. Since the one-pass criterion
+with compensated accumulation (see DESIGN.md) it certifies, in 51 evaluations
+where it previously stopped uncertified after 238.
 
 **The three losses, stated rather than argued away.** An earlier version
 dismissed two of them as unidentifiable models where "the likelihood diverges",
@@ -152,12 +153,15 @@ meaningless, because the criterion carries an arbitrary additive constant:
 
 | case | shape | n | groups | deviance worse by |
 |---:|---|---:|---:|---:|
-| 100 | near-collinear | 1,035 | 72 | 5.619e-05 |
-| 214 | near-collinear | 186 | 15 | 5.710e-05 |
+| 100 | near-collinear | 1,035 | 72 | 6.332e-05 |
+| 214 | near-collinear | 186 | 15 | 6.708e-05 |
 | 282 | groups of two | 264 | 132 | 2.737e-06 |
 
 All three are near-ties on hard surfaces, on a criterion whose own scale is in
-the hundreds. They are losses nonetheless, and are recorded as losses.
+the hundreds. They are losses nonetheless, and are recorded as losses. On the
+two near-collinear cases the gap is also below what the cross-product criterion
+can resolve: an independent Householder-QR evaluation of the augmented system
+differs from it by about 6e-5 there.
 
 The sweep also reclassifies a loss as *unidentified* only when the criterion is
 **measured** to be flat along the variance split, never on a counting rule. No

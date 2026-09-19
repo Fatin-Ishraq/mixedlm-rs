@@ -234,9 +234,9 @@ model and data, using the experiment's absolute deviance tolerance. They do
 not mean better prediction or establish which model is scientifically appropriate.
 
 A separate **400-case adversarial sweep** recorded 99 statsmodels
-nonconvergences, 131 better optima for mixedlm-rs, 167 ties and **3 worse
+nonconvergences, 130 better optima for mixedlm-rs, 168 ties and **3 worse
 optima**. Those losses have absolute deviance gaps of approximately
-`2.74e-6` to `5.71e-5`. One case also failed the sweep's independent stationarity
+`2.74e-6` to `6.71e-5`. Every case passed the sweep's independent stationarity
 check. These are finite test suites, not estimates of failure rates in general use.
 
 Both experiments are recorded in
