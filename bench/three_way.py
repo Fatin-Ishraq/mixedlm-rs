@@ -227,7 +227,7 @@ def timing(rscript, cases, reps, workdir):
         df = pd.read_csv(path)
         require_quiet(f"{name} (python)", load)
         ours_t, ours = time_reps(
-            lambda: mlm.mixedlm("y ~ x1 + x2", df, groups=df["g"],
+            lambda df=df: mlm.mixedlm("y ~ x1 + x2", df, groups=df["g"],
                                 re_formula="~x1").fit(), reps)
         row = {"case": name, "n": len(df), "groups": ngroups,
                "mixedlm_rs": {"seconds": min(ours_t), "repetitions": ours_t,
@@ -237,7 +237,7 @@ def timing(rscript, cases, reps, workdir):
         if with_sm:
             sm_reps = 1 if len(df) > SM_SINGLE_REP_ABOVE else reps
             sm_t, sm = time_reps(
-                lambda: smf.mixedlm("y ~ x1 + x2", df, groups=df["g"],
+                lambda df=df: smf.mixedlm("y ~ x1 + x2", df, groups=df["g"],
                                     re_formula="~x1").fit(), sm_reps)
             row["statsmodels"] = {"seconds": min(sm_t), "repetitions": sm_t,
                                   "converged": bool(sm.converged)}
@@ -344,6 +344,27 @@ def block_environment(reps, versions):
     return env
 
 
+def dumps(payload):
+    """Indented JSON with one line per fixture or timing case.
+
+    Every field and repetition is kept; one value per line made the file
+    thousands of lines long for no gain in readability.
+    """
+    marker = "@@row{}@@"
+    rows, shallow = [], {}
+    for key, block in payload.items():
+        if block and block.get("rows"):
+            block = dict(block)
+            block["rows"] = [marker.format(len(rows) + i)
+                             for i in range(len(block["rows"]))]
+            rows += payload[key]["rows"]
+        shallow[key] = block
+    text = json.dumps(shallow, indent=1)
+    for i, row in enumerate(rows):
+        text = text.replace(f'"{marker.format(i)}"', json.dumps(row), 1)
+    return text + "\n"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--part", choices=("all", "timing", "accuracy"),
@@ -416,7 +437,7 @@ def main() -> int:
                 "rows": rows,
             }
 
-    out.write_text(json.dumps(payload, indent=1) + "\n", encoding="utf-8")
+    out.write_text(dumps(payload), encoding="utf-8", newline="\n")
     print(f"\nwrote {out}")
     if problems:
         print("\nthe timed fits do not agree with lme4; no timing is "
