@@ -35,14 +35,43 @@ THEMES = {
         "ours": "#2a78d6", "theirs": "#8c959f", "accent": "#d95926",
         "good": "#1baf7a", "warn": "#eda100", "bad": "#e34948",
         "neutral": "#b1bac4",
+        # The three-package charts. Slots 1-3 of the reference categorical
+        # palette -- the only three that validate all-pairs -- checked against
+        # GitHub's own README surface in each mode:
+        #   node validate_palette.js "#2a78d6,#eb6834,#1baf7a" --mode light
+        #        --pairs all --surface "#ffffff"         -> all checks pass
+        # Light aqua sits under 3:1 on white, so every line also carries a
+        # distinct marker shape and a direct label: identity is never hue alone.
+        "surface": "#ffffff", "primary": "#0b0b0b", "secondary": "#52514e",
+        "hairline": "#e1e0d9",
+        "s1": "#2a78d6", "s2": "#eb6834", "s3": "#1baf7a",
+        "st_neutral": "#c3c2b7", "st_good": "#0ca30c",
+        "st_warning": "#fab219", "st_serious": "#ec835a",
+        "st_critical": "#d03b3b",
     },
     "dark": {
         "ink": "#e6edf3", "muted": "#9198a1", "grid": "#30363d",
         "ours": "#58a6ff", "theirs": "#6e7681", "accent": "#ff8a4c",
         "good": "#3fb950", "warn": "#d29922", "bad": "#f85149",
         "neutral": "#484f58",
+        #   node validate_palette.js "#3987e5,#d95926,#199e70" --mode dark
+        #        --pairs all --surface "#0d1117"         -> all checks pass
+        "surface": "#0d1117", "primary": "#ffffff", "secondary": "#c3c2b7",
+        "hairline": "#2c2c2a",
+        "s1": "#3987e5", "s2": "#d95926", "s3": "#199e70",
+        "st_neutral": "#5c5b56", "st_good": "#0ca30c",
+        "st_warning": "#fab219", "st_serious": "#ec835a",
+        "st_critical": "#d03b3b",
     },
 }
+
+# One identity per package, shared by every three-package chart. Colour follows
+# the package, never its rank, and the marker shape is the second channel.
+PACKAGES = (
+    ("mixedlm-rs", "mixedlm_rs", "s1", "o"),
+    ("lme4", "lme4", "s2", "s"),
+    ("statsmodels", "statsmodels", "s3", "^"),
+)
 
 
 def style(theme):
@@ -158,6 +187,178 @@ def outcomes_chart(baseline, theme, path):
 
     fig.tight_layout()
     fig.savefig(path, format="svg", transparent=True)
+    plt.close(fig)
+    return True
+
+
+def _seconds(value, _pos=None):
+    """Three significant figures: a fourth digit of a timing is noise."""
+    if value >= 1:
+        return f"{value:.3g} s"
+    return f"{value * 1000:.3g} ms"
+
+
+def _count(value, _pos=None):
+    return f"{value / 1000:g}k" if value >= 1000 else f"{value:g}"
+
+
+def _chrome(ax, theme):
+    """Hairline, solid, recessive: the data is the only loud thing."""
+    ax.grid(True, which="major", color=theme["hairline"], linewidth=0.8)
+    ax.set_axisbelow(True)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color(theme["hairline"])
+    ax.tick_params(which="both", length=0, colors=theme["secondary"])
+
+
+def three_way_scaling_chart(three, theme, path):
+    """Fit time against group count for all three packages, on one axis."""
+    from matplotlib.lines import Line2D
+    from matplotlib.ticker import FuncFormatter, NullFormatter
+
+    rows = three["timing"]["rows"]
+    fig, ax = plt.subplots(figsize=(7.2, 4.3))
+    handles = []
+    for label, key, slot, marker in PACKAGES:
+        pts = [(r["groups"], r[key]["seconds"]) for r in rows if r.get(key)]
+        if not pts:
+            continue
+        xs, ys = zip(*pts, strict=True)
+        style_kw = {"color": theme[slot], "linewidth": 2, "marker": marker,
+                    "markersize": 7, "markeredgecolor": theme["surface"],
+                    "markeredgewidth": 1.6}
+        # A 2px ring in the surface colour keeps a marker legible where it
+        # crosses another series.
+        ax.plot(xs, ys, zorder=3, **style_kw)
+        # A direct label at the line's end, in ink rather than series colour:
+        # it names the line beside it and carries the one value worth reading.
+        ax.annotate(f"{label}  {_seconds(ys[-1])}", (xs[-1], ys[-1]),
+                    textcoords="offset points", xytext=(9, 0), va="center",
+                    color=theme["primary"], fontsize=10)
+        handles.append(Line2D([], [], label=label, **style_kw))
+
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlim(60, max(r["groups"] for r in rows) * 9)
+    ax.xaxis.set_major_formatter(FuncFormatter(_count))
+    ax.yaxis.set_major_formatter(FuncFormatter(_seconds))
+    ax.xaxis.set_minor_formatter(NullFormatter())
+    ax.yaxis.set_minor_formatter(NullFormatter())
+    ax.set_xlabel("groups in the random-effects factor (log scale)",
+                  color=theme["secondary"])
+    ax.set_ylabel("time to fit (log scale)", color=theme["secondary"])
+    _chrome(ax, theme)
+
+    legend = ax.legend(handles=handles, loc="upper left", frameon=False,
+                       fontsize=10, handlelength=2.2)
+    for text in legend.get_texts():
+        text.set_color(theme["primary"])
+
+    fig.tight_layout()
+    fig.savefig(path, transparent=True, dpi=200)
+    plt.close(fig)
+    return True
+
+
+# The outcome of one Python fit, judged against lme4's optimum on the same
+# file. Status colours, because these outcomes do mean good or bad; each is
+# also named in the legend, so none is read from colour alone.
+LME4_OUTCOMES = (
+    ("matches lme4", "st_neutral"),
+    ("higher likelihood than lme4", "st_good"),
+    ("lower, and flagged not converged", "st_warning"),
+    ("lower, but reported converged", "st_critical"),
+    ("raised an error", "st_serious"),
+)
+
+
+def lme4_outcome(entry, tolerance):
+    if entry.get("error"):
+        return "raised an error"
+    gap = entry.get("deviance_gap_to_lme4")
+    if gap is None:
+        return None                       # lme4 itself failed on this file
+    if abs(gap) <= tolerance:
+        return "matches lme4"
+    if gap > 0:
+        return "higher likelihood than lme4"
+    if entry.get("converged"):
+        return "lower, but reported converged"
+    return "lower, and flagged not converged"
+
+
+def lme4_outcome_counts(three, tolerance):
+    counts = {key: dict.fromkeys((o for o, _ in LME4_OUTCOMES), 0)
+              for _, key, _, _ in PACKAGES if key != "lme4"}
+    for row in three["accuracy"]["rows"]:
+        for key, tally in counts.items():
+            outcome = lme4_outcome(row[key], tolerance)
+            if outcome:
+                tally[outcome] += 1
+    return counts
+
+
+def lme4_agreement_chart(three, theme, path):
+    """Where each Python package lands relative to lme4, on the hard fixtures."""
+    from matplotlib.patches import Patch
+
+    sys.path.insert(0, str(ROOT / "bench"))
+    import tolerances
+
+    counts = lme4_outcome_counts(three, tolerances.DEVIANCE_ABS)
+    order = [("mixedlm-rs", "mixedlm_rs"), ("statsmodels", "statsmodels")]
+    total = max(sum(c.values()) for c in counts.values())
+    # Dark ink where a light status fill would swallow white text.
+    dark_ink = {"st_warning"} | ({"st_neutral"} if theme["surface"] == "#ffffff"
+                                 else set())
+
+    fig, ax = plt.subplots(figsize=(7.2, 2.9))
+    for y, (_label, key) in enumerate(reversed(order)):
+        left = 0
+        for outcome, colour in LME4_OUTCOMES:
+            value = counts[key][outcome]
+            if not value:
+                continue
+            # An edge in the surface colour is the 2px gap between segments:
+            # it separates without adding ink.
+            ax.barh(y, value, left=left, height=0.56, color=theme[colour],
+                    edgecolor=theme["surface"], linewidth=2, zorder=3)
+            if value / total >= 0.06:
+                ax.text(left + value / 2, y, str(value), ha="center",
+                        va="center", fontsize=10.5, fontweight="bold",
+                        color="#0b0b0b" if colour in dark_ink else "#ffffff",
+                        zorder=4)
+            left += value
+
+    ax.set_yticks(range(len(order)))
+    ax.set_yticklabels([label for label, _ in reversed(order)],
+                       color=theme["primary"], fontsize=11)
+    ax.set_xlim(0, total)
+    ax.set_xticks([])
+    ax.tick_params(length=0)
+    for side in ("top", "right", "left", "bottom"):
+        ax.spines[side].set_visible(False)
+
+    # The legend doubles as the count table for segments too narrow to label.
+    handles = []
+    for outcome, colour in LME4_OUTCOMES:
+        a, b = counts["mixedlm_rs"][outcome], counts["statsmodels"][outcome]
+        if a or b:
+            handles.append(Patch(color=theme[colour],
+                                 label=f"{outcome}  ({a} / {b})"))
+    legend = ax.legend(handles=handles, loc="upper left",
+                       bbox_to_anchor=(0, -0.02), ncols=2, frameon=False,
+                       fontsize=9.5, handlelength=1.1, columnspacing=1.6,
+                       title="counts: mixedlm-rs / statsmodels",
+                       title_fontsize=9, alignment="left")
+    legend.get_title().set_color(theme["secondary"])
+    for text in legend.get_texts():
+        text.set_color(theme["primary"])
+
+    fig.tight_layout()
+    fig.savefig(path, transparent=True, bbox_inches="tight", dpi=200)
     plt.close(fig)
     return True
 
